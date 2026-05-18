@@ -2,6 +2,7 @@
 
 **A circuit breaker for LLM agents in production. Stop infinite loops, runaway costs, and privilege escalations in 3 lines of code.**
 
+<!-- TODO: replace the tests-passing badge with a GitHub Actions workflow status badge once CI is set up -->
 <p>
   <img alt="Python 3.9+" src="https://img.shields.io/badge/python-3.9%2B-blue">
   <img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-green">
@@ -17,7 +18,8 @@ Observability tells you this happened. **AgentBrake stops it from happening.**
 ## Quick start
 
 ```bash
-pip install agentbrake
+# Coming soon to PyPI. For now:
+pip install git+https://github.com/BOSSMETALIQUE/agentbrake.git
 ```
 
 ```python
@@ -34,6 +36,17 @@ def call_tool(name: str, args: dict):
 ```
 
 That's it. If your agent loops, blows the budget, or tries to call something outside the allowlist, `call_tool` raises `AgentBrakeInterrupt` 🛑 instead of executing.
+
+Catch the interrupt to handle it gracefully:
+
+```python
+from agentbrake import AgentBrakeInterrupt
+
+try:
+    agent.run("do the thing")
+except AgentBrakeInterrupt as e:
+    print(f"Stopped: {e.reason}")  # LOOP, BUDGET, or ESCALATION
+```
 
 ## What it detects
 
@@ -64,8 +77,8 @@ Those tools are **observability** — they show you, after the fact, that your a
 ## Development
 
 ```bash
-git clone <repo-url>
-cd agenbrake
+git clone https://github.com/BOSSMETALIQUE/agentbrake.git
+cd agentbrake
 python -m venv .venv
 .venv\Scripts\activate          # Windows
 # source .venv/bin/activate     # macOS / Linux
@@ -73,6 +86,6 @@ pip install -e ".[dev]"
 pytest
 ```
 
-## Footer
+---
 
-Built by [BOSSMETALIQUE]. MIT License. Feedback welcome on GitHub Issues.
+Built by [BOSSMETALIQUE](https://github.com/BOSSMETALIQUE). MIT License. Feedback welcome on GitHub Issues.
