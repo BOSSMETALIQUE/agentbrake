@@ -66,9 +66,35 @@ Local mode is zero-config and runs entirely in-process. A remote mode (backend +
 
 - [x] Local mode SDK (loops, budget, escalation)
 - [ ] LangChain integration examples
-- [ ] FastAPI backend with dynamic validation UI
+- [x] FastAPI backend with dynamic validation UI
 - [ ] Slack / webhook integration for human-in-the-loop
 - [ ] PyPI release
+
+## Remote mode (human-in-the-loop)
+
+Start the backend:
+
+```bash
+uvicorn server.main:app --reload --port 8000
+```
+
+Point the SDK at it:
+
+```python
+import agentbrake
+
+agentbrake.init(
+    allowed_tools=["search"],
+    budget_usd=5.0,
+    mode="remote",
+    api_url="http://localhost:8000",
+)
+
+# Run the agent. If interrupted, the SDK will print a URL.
+# A human can approve or kill the run from the browser.
+```
+
+When a detector trips, the SDK posts the interrupt to the backend, prints the validation URL in the terminal, and polls every 2 s until a human clicks Approve or Kill. Approve resumes the run as if nothing happened; Kill (or backend unreachable) raises `AgentBrakeInterrupt`.
 
 ## Why AgentBrake vs LangSmith / Helicone / AgentOps
 

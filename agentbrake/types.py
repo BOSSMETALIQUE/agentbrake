@@ -14,6 +14,7 @@ class InterruptReason(str, Enum):
     LOOP = "loop"
     BUDGET = "budget"
     ESCALATION = "escalation"
+    TIMEOUT = "timeout"
 
 
 class ToolCall(BaseModel):

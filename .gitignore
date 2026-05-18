@@ -17,6 +17,7 @@ env/
 # Env files
 .env
 .env.*
+!.env.example
 
 # IDE
 .vscode/
@@ -27,6 +28,10 @@ env/
 .pytest_cache/
 .coverage
 htmlcov/
+
+# SQLite (dev backend)
+*.db
+*.db-journal
 
 # OS
 .DS_Store
