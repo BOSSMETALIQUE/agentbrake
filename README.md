@@ -2,11 +2,10 @@
 
 **A circuit breaker for LLM agents in production. Stop infinite loops, runaway costs, and privilege escalations in 3 lines of code.**
 
-<!-- TODO: replace the tests-passing badge with a GitHub Actions workflow status badge once CI is set up -->
 <p>
   <img alt="Python 3.9+" src="https://img.shields.io/badge/python-3.9%2B-blue">
   <img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-green">
-  <img alt="Tests passing" src="https://img.shields.io/badge/tests-passing-brightgreen">
+  <a href="https://github.com/BOSSMETALIQUE/agentbrake/actions"><img alt="Tests" src="https://github.com/BOSSMETALIQUE/agentbrake/actions/workflows/tests.yml/badge.svg"></a>
 </p>
 
 ## The problem

@@ -13,8 +13,19 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0"]
+# Everything pytest needs to run the full test suite (detectors + backend).
+# Kept dependency-light so the CI matrix can include Python 3.9, which
+# langchain 1.x / langgraph drop. Heavy example-only deps live in
+# requirements.txt for local dev convenience.
+dev = [
+    "pytest>=8.0",
+    "fastapi>=0.110",
+    "jinja2>=3.1",
+]
 
 [tool.setuptools.packages.find]
-include = ["agentbrake*"]
-exclude = ["tests*"]
+include = ["agentbrake*", "server*"]
+exclude = ["tests*", "examples*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
