@@ -8,6 +8,8 @@
   <a href="https://github.com/BOSSMETALIQUE/agentbrake/actions"><img alt="Tests" src="https://github.com/BOSSMETALIQUE/agentbrake/actions/workflows/tests.yml/badge.svg"></a>
 </p>
 
+> **⚡ Status:** v0.0.1 — Local mode is stable (15/15 tests passing). LangGraph examples and remote mode UI work end-to-end. PyPI release coming soon. Looking for early users to validate the API.
+
 ## The problem
 
 You ship an agent on Friday. Saturday morning you wake up to a $200 OpenAI bill because it spent the night calling `search("latest news")` in a loop after a tool returned a malformed response. Or your support bot, given a `tools` array a little too permissive, calls `delete_database` because a user prompt-injected it. Or it just retries the same failing call 50 times before giving up.
@@ -49,17 +51,45 @@ except AgentBrakeInterrupt as e:
 
 ## What it detects
 
-| Detector | What it catches | Example |
-|---|---|---|
-| **Loop** | 3 consecutive tool calls with the same name + structurally identical args | Agent repeatedly calls `search({"q": "weather"})` after a malformed response |
-| **Budget** | Cumulative cost exceeds the configured `budget_usd` ceiling | Long-running agent burns past its $5 cap overnight |
-| **Escalation** | Tool name is not in the configured `allowed_tools` list | Agent tries to call `delete_database` when only `search` and `read_file` are allowed |
+| Detector | What it catches | Example | Default behavior |
+|---|---|---|---|
+| **Loop** | 3 consecutive tool calls with the same name + structurally identical args | Agent repeatedly calls `search({"q": "weather"})` after a malformed response | Local: raise `AgentBrakeInterrupt(LOOP)` · Remote: request human validation |
+| **Budget** | Cumulative cost exceeds the configured `budget_usd` ceiling | Long-running agent burns past its $5 cap overnight | Local: raise `AgentBrakeInterrupt(BUDGET)` · Remote: request human validation |
+| **Escalation** | Tool name is not in the configured `allowed_tools` list | Agent tries to call `delete_database` when only `search` and `read_file` are allowed | Local: raise `AgentBrakeInterrupt(ESCALATION)` · Remote: request human validation |
 
 ## How it works
 
 The `@guard()` decorator wraps your tool-dispatch function and keeps a `RunState` in memory (run id, total cost, full call history). Every call passes through three detectors in order — escalation → loop → budget — and any hit raises `AgentBrakeInterrupt` *before* the underlying tool runs. Loop detection uses a SHA-256 hash over the JSON-sorted `(name, args)` payload, so argument ordering doesn't fool it.
 
 Local mode is zero-config and runs entirely in-process. A remote mode (backend + human-in-the-loop validation UI) is on the roadmap.
+
+## Architecture
+
+AgentBrake ships in two modes — **local** (zero-config, in-process) and **remote** (backend + browser validation). The diagram below shows both paths through the same SDK.
+
+```mermaid
+flowchart TD
+    A["User's Agent<br/>(LangGraph, raw SDK, ...)"] -->|tool call| B["AgentBrake @guard()"]
+    B --> C{"Detectors<br/>escalation · loop · budget"}
+    C -->|safe| D["Tool executes"]
+    C -->|trip · local mode| E["raise AgentBrakeInterrupt"]
+    C -->|trip · remote mode| F["POST /interrupts"]
+    F --> G["FastAPI Backend<br/>(SQLite)"]
+    G --> H["Validation UI<br/>(HTML page)"]
+    H -->|human clicks Approve / Kill| G
+    B -.->|poll GET /status| G
+    G -.->|approved| D
+    G -.->|killed / timeout| E
+
+    classDef sdk fill:#1f9d55,stroke:#0e6b39,color:#fff
+    classDef backend fill:#8b5cf6,stroke:#5b3a99,color:#fff
+    classDef interrupt fill:#c63b3b,stroke:#7a2222,color:#fff
+    class B,C sdk
+    class F,G,H backend
+    class E interrupt
+```
+
+The SDK is the only piece you import. In local mode (default), it raises on detection. In remote mode, it sends the interrupt context to the backend, prints a validation URL in the terminal, and polls for a human decision. Approve → the tool executes. Kill → `AgentBrakeInterrupt` is raised.
 
 ## Roadmap
 
@@ -110,6 +140,17 @@ python -m venv .venv
 pip install -e ".[dev]"
 pytest
 ```
+
+## Comparison
+
+| Tool           | Approach                       | When it acts             | Self-hosted     |
+|----------------|--------------------------------|--------------------------|-----------------|
+| **AgentBrake** | Enforcement (circuit breaker)  | Before damage (mid-run)  | Yes (MIT)       |
+| LangSmith      | Observability + guardrails     | After + during           | No (cloud)      |
+| Helicone       | Observability + caching        | After                    | Yes (open core) |
+| AgentOps       | Observability + replay         | After                    | No (cloud)      |
+
+We don't compete with these — we complement them. Run AgentBrake as your last line of defense before the tool actually executes.
 
 ---
 
