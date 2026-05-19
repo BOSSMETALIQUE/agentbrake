@@ -1,0 +1,104 @@
+name: Bug report
+description: Something broke or behaves unexpectedly.
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. The more reproducible the bug, the faster it gets fixed.
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: A short summary of what's wrong.
+      placeholder: "Brief description of the issue."
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Reproduction steps
+      description: Minimal steps to reproduce. Include code if possible.
+      placeholder: |
+        1. Initialize agentbrake with allowed_tools=["search"], budget_usd=5.0
+        2. Call guard() on a tool dispatcher
+        3. Invoke the agent
+        4. See error
+    validations:
+      required: true
+
+  - type: input
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What should have happened?
+      placeholder: "AgentBrakeInterrupt should have been raised before the tool ran."
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: What actually happened?
+    validations:
+      required: true
+
+  - type: dropdown
+    id: python-version
+    attributes:
+      label: Python version
+      options:
+        - "3.9"
+        - "3.10"
+        - "3.11"
+        - "3.12"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - Windows
+        - macOS
+        - Linux
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: AgentBrake version or commit SHA
+      placeholder: "0.0.1 or abc1234"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Mode
+      options:
+        - local
+        - remote
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs / error message
+      description: Paste relevant logs or traceback. Auto-formatted as a code block.
+      render: shell
+
+  - type: checkboxes
+    id: searched
+    attributes:
+      label: Pre-flight check
+      options:
+        - label: I've searched existing issues and this hasn't been reported.
+          required: true

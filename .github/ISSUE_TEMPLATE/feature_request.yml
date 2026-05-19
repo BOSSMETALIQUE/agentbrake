@@ -1,0 +1,52 @@
+name: Feature request
+description: Suggest a new capability or improvement.
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Before filing, please skim CONTRIBUTING.md to check the project's scope. Out-of-scope requests will be closed politely.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem you're trying to solve
+      description: What's the use case? What's not possible today?
+      placeholder: "What's the use case? What's not possible today?"
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed solution
+      description: How would you like it to work? A code snippet of the desired API helps.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Other approaches you tried or thought about.
+
+  - type: checkboxes
+    id: scope
+    attributes:
+      label: Scope
+      description: Which area does this fall under? Pick all that apply.
+      options:
+        - label: New detector
+        - label: New framework integration
+        - label: UI improvement
+        - label: Performance
+        - label: Other
+
+  - type: checkboxes
+    id: confirm
+    attributes:
+      label: Pre-flight check
+      options:
+        - label: I've read CONTRIBUTING.md and this is in scope.
+          required: true
