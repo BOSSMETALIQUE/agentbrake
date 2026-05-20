@@ -1,0 +1,121 @@
+"""Demo 4 — Remote mode (human-in-the-loop validation).
+
+Same scenario as 03_privilege_escalation, but the SDK is configured for remote
+validation: when ESCALATION trips, the SDK posts the interrupt to the FastAPI
+backend, prints a URL in the terminal, and polls until a human clicks
+Approve / Kill in the browser.
+
+Prerequisites:
+  1. Start the backend in another terminal:
+       uvicorn server.main:app --port 8000
+  2. ANTHROPIC_API_KEY in .env
+
+Run: python examples/04_remote_validation.py
+"""
+
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+import httpx
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+import agentbrake
+from examples._shared import (  # noqa: E402
+    AgentBrakeInterrupt,
+    build_agent,
+    build_langchain_tool,
+    load_env,
+    print_banner,
+    run_state_snapshot,
+)
+
+API_URL = "http://localhost:8000"
+
+
+def search(input: str) -> str:
+    return f"Found file: {input} exists in /tmp/old_report.txt"
+
+
+def delete_file(input: str) -> str:
+    # Should NEVER execute in this demo (delete_file is not in the allowlist).
+    print(f"DELETED {input}")
+    return f"Deleted {input}"
+
+
+def _check_backend(url: str) -> bool:
+    """Return True if the backend responds to a quick health probe."""
+    try:
+        r = httpx.get(f"{url}/docs", timeout=2.0)
+        return r.status_code < 500
+    except httpx.HTTPError:
+        return False
+
+
+def main() -> None:
+    load_env()
+    print_banner("Demo 4 — Remote validation (human-in-the-loop)")
+
+    if not _check_backend(API_URL):
+        print()
+        print(f"ERROR: Backend not reachable at {API_URL}.")
+        print("Start it in another terminal with:")
+        print("    uvicorn server.main:app --port 8000")
+        sys.exit(1)
+
+    agentbrake.init(
+        api_key=None,
+        allowed_tools=["search"],     # delete_file is NOT in the allowlist
+        budget_usd=10.0,
+        mode="remote",
+        api_url=API_URL,
+    )
+
+    tools = [
+        build_langchain_tool(
+            "search",
+            search,
+            "Search for a file by name. Input is the file name.",
+        ),
+        build_langchain_tool(
+            "delete_file",
+            delete_file,
+            "Delete a file from disk. Input is the file path.",
+        ),
+    ]
+    agent = build_agent(tools, max_iterations=10)
+
+    print()
+    print(f"Mode: REMOTE — interrupts will be sent to {API_URL} for human validation.")
+    print("When the detector trips, open the URL printed below in your browser")
+    print("and click Approve or Kill. The script will resume automatically.")
+    print()
+
+    try:
+        agent.invoke({"input": "Find the file old_report.txt and delete it"})
+    except AgentBrakeInterrupt as e:
+        snap = run_state_snapshot()
+        if e.reason.value == "timeout":
+            print_banner(
+                "Timed out waiting for a human decision — the run was stopped.",
+                interrupt=True,
+            )
+        else:
+            print_banner(
+                f"Human killed the run from the browser ({e.reason.value.upper()})",
+                interrupt=True,
+            )
+        print(f"Reason   : {e.reason.value}")
+        print(f"Context  : {e.context}")
+        print(f"RunState : {snap}")
+        print("Confirmation: 'DELETED' was never printed — the destructive call did not run.")
+        return
+
+    print_banner("Human approved — agent finished normally.")
+    print(f"RunState : {run_state_snapshot()}")
+
+
+if __name__ == "__main__":
+    main()

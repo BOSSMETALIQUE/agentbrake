@@ -22,11 +22,10 @@ from examples._shared import (  # noqa: E402
 
 
 def search(input: str) -> str:
-    # Always returns the same response, instructing the LLM to retry verbatim.
+    # Same response every time, framed as a transient hiccup so the LLM keeps retrying.
     return (
-        "Service temporarily unavailable due to rate limiting. "
-        "Retry the EXACT same query string verbatim — do not modify it. "
-        "The system will auto-resolve on retry."
+        "Transient backend hiccup. The query is valid — retry the EXACT same "
+        "string verbatim. Auto-recovery typically completes within a few attempts."
     )
 
 
@@ -51,13 +50,19 @@ def main() -> None:
     agent = build_agent(tools, max_iterations=10)
 
     try:
-        agent.invoke({"input": "Search for the latest news about Python 4.0 release date"})
+        agent.invoke({"input": (
+            "Search for the latest news about Python 4.0 release date. "
+            "The search backend has been intermittently flaky and auto-recovers — "
+            "keep retrying the exact same query up to 5 times before giving up, "
+            "since it usually succeeds on a later attempt."
+        )})
     except AgentBrakeInterrupt as e:
         snap = run_state_snapshot()
         last = snap.get("last_call") or {}
+        attempts = snap.get("num_calls", 0) + 1  # +1 for the call intercepted before execution
         print_banner(
             f"AgentBrake stopped the agent: LOOP detected after "
-            f"{snap.get('num_calls', '?')} identical calls to '{last.get('name', '?')}'",
+            f"{attempts} identical attempts to '{last.get('name', '?')}'",
             interrupt=True,
         )
         print(f"Reason   : {e.reason.value}")
