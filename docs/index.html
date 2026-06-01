@@ -1,0 +1,898 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AgentBrake — The circuit breaker for LLM agents in production</title>
+  <meta name="description" content="AgentBrake is a circuit breaker for LLM agents in production. Stop infinite loops, runaway costs, and privilege escalations in 3 lines of code." />
+
+  <!-- Open Graph -->
+  <meta property="og:type" content="website" />
+  <meta property="og:title" content="AgentBrake — The circuit breaker for LLM agents" />
+  <meta property="og:description" content="Stop infinite loops, runaway costs, and privilege escalations in 3 lines of code." />
+  <meta property="og:url" content="https://bossmetalique.github.io/agentbrake/" />
+  <meta name="twitter:card" content="summary_large_image" />
+
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M7.5 2h9L22 7.5v9L16.5 22h-9L2 16.5v-9z' fill='none' stroke='%23ff5d3b' stroke-width='2'/%3E%3Cpath d='M10 9v6M14 9v6' stroke='%23ff5d3b' stroke-width='2' stroke-linecap='round'/%3E%3C/svg%3E" />
+
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet" />
+
+  <style>
+    /* ---------- Reset & tokens ---------- */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg: #0d1117;
+      --bg-soft: #0c1015;
+      --surface: #161b22;
+      --surface-2: #1b2029;
+      --border: #30363d;
+      --border-soft: #21262d;
+
+      --text: #e6edf3;
+      --text-muted: #8b949e;
+      --text-dim: #6e7681;
+
+      --accent: #ff5d3b;
+      --accent-2: #ff8a5b;
+      --accent-soft: rgba(255, 93, 59, 0.12);
+      --accent-grad: linear-gradient(135deg, #ff5d3b 0%, #ff8a5b 100%);
+
+      --green: #3fb950;
+      --red: #f85149;
+
+      --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+      --maxw: 1080px;
+      --radius: 14px;
+    }
+
+    html {
+      scroll-behavior: smooth;
+      scroll-padding-top: 88px;
+      -webkit-text-size-adjust: 100%;
+    }
+
+    body {
+      font-family: "Inter", system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.6;
+      -webkit-font-smoothing: antialiased;
+      text-rendering: optimizeLegibility;
+      overflow-x: hidden;
+    }
+
+    /* Ambient background glow */
+    body::before {
+      content: "";
+      position: fixed;
+      inset: 0;
+      z-index: -1;
+      background:
+        radial-gradient(60% 50% at 50% -5%, rgba(255, 93, 59, 0.16) 0%, transparent 60%),
+        radial-gradient(45% 40% at 100% 0%, rgba(255, 138, 91, 0.08) 0%, transparent 55%);
+      pointer-events: none;
+    }
+
+    a { color: inherit; text-decoration: none; }
+    img, svg { display: block; }
+
+    .container {
+      width: 100%;
+      max-width: var(--maxw);
+      margin-inline: auto;
+      padding-inline: 24px;
+    }
+
+    section { scroll-margin-top: 88px; }
+
+    /* ---------- Header ---------- */
+    .site-header {
+      position: fixed;
+      inset: 0 0 auto 0;
+      z-index: 50;
+      height: 64px;
+      display: flex;
+      align-items: center;
+      transition: background 0.25s ease, border-color 0.25s ease, backdrop-filter 0.25s ease;
+      border-bottom: 1px solid transparent;
+    }
+    .site-header.scrolled {
+      background: rgba(13, 17, 23, 0.72);
+      backdrop-filter: saturate(160%) blur(12px);
+      -webkit-backdrop-filter: saturate(160%) blur(12px);
+      border-bottom-color: var(--border-soft);
+    }
+    .site-header .container {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+    }
+    .brand {
+      display: inline-flex;
+      align-items: center;
+      gap: 9px;
+      font-weight: 800;
+      font-size: 1.05rem;
+      letter-spacing: -0.01em;
+      color: #f0f6fc;
+    }
+    .brand .mark { width: 24px; height: 24px; color: var(--accent); flex: none; }
+    .nav-links {
+      display: flex;
+      align-items: center;
+      gap: 28px;
+    }
+    .nav-links a.link {
+      font-size: 0.92rem;
+      color: var(--text-muted);
+      font-weight: 500;
+      transition: color 0.18s ease;
+    }
+    .nav-links a.link:hover { color: var(--text); }
+
+    /* ---------- Buttons ---------- */
+    .btn {
+      --pad-y: 12px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 9px;
+      padding: var(--pad-y) 22px;
+      border-radius: 10px;
+      font-weight: 600;
+      font-size: 0.98rem;
+      font-family: inherit;
+      cursor: pointer;
+      border: 1px solid transparent;
+      transition: transform 0.16s ease, box-shadow 0.2s ease, background 0.2s ease, border-color 0.2s ease, color 0.2s ease;
+      white-space: nowrap;
+    }
+    .btn svg { width: 18px; height: 18px; flex: none; }
+    .btn-primary {
+      background: var(--accent-grad);
+      color: #1a0e08;
+      box-shadow: 0 8px 24px -8px rgba(255, 93, 59, 0.55);
+    }
+    .btn-primary:hover { transform: translateY(-2px); box-shadow: 0 14px 32px -10px rgba(255, 93, 59, 0.7); }
+    .btn-secondary {
+      background: var(--surface);
+      color: var(--text);
+      border-color: var(--border);
+    }
+    .btn-secondary:hover { transform: translateY(-2px); border-color: #4b525c; background: var(--surface-2); }
+    .btn-sm { --pad-y: 8px; padding: 8px 16px; font-size: 0.9rem; border-radius: 9px; }
+
+    /* ---------- Section scaffolding ---------- */
+    .section { padding: 96px 0; }
+    .section-head { max-width: 760px; margin-bottom: 56px; }
+    .section-head.center { margin-inline: auto; text-align: center; }
+    .eyebrow {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 0.78rem;
+      font-weight: 700;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--accent);
+      margin-bottom: 16px;
+    }
+    .eyebrow::before {
+      content: "";
+      width: 18px;
+      height: 2px;
+      border-radius: 2px;
+      background: var(--accent);
+    }
+    .section-head.center .eyebrow::before { display: none; }
+    h2.title {
+      font-size: clamp(1.9rem, 4.5vw, 2.9rem);
+      font-weight: 800;
+      letter-spacing: -0.025em;
+      line-height: 1.12;
+      color: #f0f6fc;
+    }
+    h2.title .nb { white-space: nowrap; }
+    .section-head p.lead {
+      margin-top: 16px;
+      color: var(--text-muted);
+      font-size: 1.08rem;
+    }
+
+    /* ---------- Hero ---------- */
+    .hero {
+      position: relative;
+      padding: 168px 0 104px;
+      text-align: center;
+    }
+    .hero-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 9px;
+      padding: 7px 15px;
+      border: 1px solid var(--border);
+      background: rgba(22, 27, 34, 0.6);
+      border-radius: 999px;
+      font-size: 0.84rem;
+      color: var(--text-muted);
+      font-weight: 500;
+      margin-bottom: 30px;
+    }
+    .hero-pill .dot {
+      width: 8px; height: 8px; border-radius: 50%;
+      background: var(--green);
+      box-shadow: 0 0 0 3px rgba(63, 185, 80, 0.18);
+    }
+    .hero h1 {
+      font-size: clamp(3rem, 9vw, 5.75rem);
+      font-weight: 900;
+      letter-spacing: -0.04em;
+      line-height: 0.98;
+      background: linear-gradient(180deg, #ffffff 0%, #b9c2cc 100%);
+      -webkit-background-clip: text;
+      background-clip: text;
+      color: transparent;
+    }
+    .hero .subtitle {
+      margin: 22px auto 0;
+      max-width: 620px;
+      font-size: clamp(1.1rem, 2.4vw, 1.4rem);
+      color: var(--text-muted);
+      font-weight: 400;
+    }
+    .hero-cta {
+      margin-top: 38px;
+      display: flex;
+      gap: 14px;
+      justify-content: center;
+      flex-wrap: wrap;
+    }
+    .hero .install { margin: 30px auto 0; }
+
+    /* ---------- Install command block ---------- */
+    .install {
+      display: inline-flex;
+      align-items: center;
+      gap: 12px;
+      max-width: 100%;
+      padding: 10px 10px 10px 18px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      font-family: var(--mono);
+    }
+    .install-prompt { color: var(--accent); font-weight: 700; user-select: none; }
+    .install-cmd {
+      font-size: 0.98rem;
+      color: var(--text);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .copy-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      padding: 7px 12px;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      background: var(--surface-2);
+      color: var(--text-muted);
+      font-family: inherit;
+      font-size: 0.82rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: color 0.18s ease, border-color 0.18s ease, background 0.18s ease;
+      flex: none;
+    }
+    .copy-btn:hover { color: var(--text); border-color: #4b525c; }
+    .copy-btn svg { width: 15px; height: 15px; }
+    .copy-btn .ico-check { display: none; color: var(--green); }
+    .copy-btn.copied { color: var(--green); border-color: rgba(63, 185, 80, 0.4); }
+    .copy-btn.copied .ico-copy { display: none; }
+    .copy-btn.copied .ico-check { display: block; }
+
+    /* ---------- Problem cards ---------- */
+    .cards {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 22px;
+    }
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border-soft);
+      border-radius: var(--radius);
+      padding: 30px 26px;
+      transition: transform 0.2s ease, border-color 0.2s ease, background 0.2s ease;
+    }
+    .card:hover { transform: translateY(-4px); border-color: var(--border); background: var(--surface-2); }
+    .card .ico {
+      width: 52px; height: 52px;
+      display: grid; place-items: center;
+      font-size: 1.6rem;
+      border-radius: 12px;
+      background: var(--accent-soft);
+      border: 1px solid rgba(255, 93, 59, 0.25);
+      margin-bottom: 20px;
+    }
+    .card h3 { font-size: 1.18rem; font-weight: 700; color: #f0f6fc; letter-spacing: -0.01em; }
+    .card p { margin-top: 10px; color: var(--text-muted); font-size: 0.97rem; }
+
+    /* ---------- Code window ---------- */
+    .code-window {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      overflow: hidden;
+      box-shadow: 0 30px 60px -30px rgba(0, 0, 0, 0.7);
+      max-width: 760px;
+      margin-inline: auto;
+    }
+    .code-bar {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      padding: 13px 18px;
+      background: var(--surface-2);
+      border-bottom: 1px solid var(--border-soft);
+    }
+    .dots { display: flex; gap: 7px; }
+    .dots span { width: 12px; height: 12px; border-radius: 50%; background: #3a4048; }
+    .dots span:nth-child(1) { background: #ff5f56; }
+    .dots span:nth-child(2) { background: #ffbd2e; }
+    .dots span:nth-child(3) { background: #27c93f; }
+    .code-bar .fname { font-family: var(--mono); font-size: 0.85rem; color: var(--text-dim); }
+    pre.code {
+      margin: 0;
+      padding: 24px 26px;
+      overflow-x: auto;
+      font-family: var(--mono);
+      font-size: 0.95rem;
+      line-height: 1.75;
+      color: #c9d1d9;
+      tab-size: 4;
+    }
+    pre.code code { font-family: inherit; white-space: pre; }
+    .tok-kw { color: #ff7b72; }
+    .tok-fn { color: #d2a8ff; }
+    .tok-dec { color: #d2a8ff; }
+    .tok-str { color: #a5d6ff; }
+    .tok-num { color: #79c0ff; }
+    .tok-builtin { color: #79c0ff; }
+    .tok-com { color: #8b949e; font-style: italic; }
+
+    .solution-note {
+      max-width: 760px;
+      margin: 22px auto 0;
+      text-align: center;
+      color: var(--text-muted);
+      font-size: 0.97rem;
+    }
+    .solution-note code {
+      font-family: var(--mono);
+      font-size: 0.88em;
+      background: var(--surface);
+      border: 1px solid var(--border-soft);
+      padding: 2px 7px;
+      border-radius: 6px;
+      color: var(--accent-2);
+    }
+
+    /* ---------- How it works steps ---------- */
+    .steps {
+      display: flex;
+      align-items: stretch;
+      gap: 8px;
+    }
+    .step {
+      flex: 1;
+      background: var(--surface);
+      border: 1px solid var(--border-soft);
+      border-radius: var(--radius);
+      padding: 30px 26px;
+      position: relative;
+      transition: transform 0.2s ease, border-color 0.2s ease;
+    }
+    .step:hover { transform: translateY(-4px); border-color: var(--border); }
+    .step-num {
+      font-family: var(--mono);
+      font-size: 0.8rem;
+      font-weight: 700;
+      color: var(--accent);
+      letter-spacing: 0.05em;
+    }
+    .step .ico {
+      font-size: 1.9rem;
+      margin: 14px 0 16px;
+    }
+    .step h3 { font-size: 1.2rem; font-weight: 700; color: #f0f6fc; }
+    .step p { margin-top: 10px; color: var(--text-muted); font-size: 0.95rem; }
+    .step-arrow {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--accent);
+      font-size: 1.5rem;
+      flex: none;
+      width: 30px;
+    }
+
+    /* ---------- Comparison table ---------- */
+    .table-wrap {
+      max-width: 920px;
+      margin-inline: auto;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      overflow: hidden;
+    }
+    .table-scroll { overflow-x: auto; }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      min-width: 640px;
+      font-size: 0.96rem;
+    }
+    thead th {
+      text-align: left;
+      padding: 18px 22px;
+      background: var(--surface-2);
+      color: var(--text-muted);
+      font-weight: 600;
+      font-size: 0.82rem;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      border-bottom: 1px solid var(--border);
+      white-space: nowrap;
+    }
+    tbody td {
+      padding: 18px 22px;
+      border-bottom: 1px solid var(--border-soft);
+      color: var(--text-muted);
+      vertical-align: middle;
+    }
+    tbody tr:last-child td { border-bottom: none; }
+    tbody td:first-child { color: var(--text); font-weight: 600; white-space: nowrap; }
+    tr.is-agentbrake td {
+      background: var(--accent-soft);
+      color: var(--text);
+    }
+    tr.is-agentbrake td:first-child { color: #fff; }
+    .tname {
+      display: inline-flex;
+      align-items: center;
+      gap: 9px;
+    }
+    .tname .mark { width: 18px; height: 18px; color: var(--accent); }
+    .badge-best {
+      display: inline-block;
+      margin-left: 6px;
+      padding: 2px 8px;
+      font-size: 0.68rem;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      color: #1a0e08;
+      background: var(--accent-grad);
+      border-radius: 999px;
+      vertical-align: middle;
+    }
+    .yes { color: var(--green); font-weight: 600; }
+    .no { color: var(--text-dim); }
+    .hl { color: #f0f6fc; font-weight: 600; }
+
+    .compare-note {
+      max-width: 920px;
+      margin: 22px auto 0;
+      text-align: center;
+      color: var(--text-dim);
+      font-size: 0.92rem;
+    }
+
+    /* ---------- Footer ---------- */
+    .site-footer {
+      border-top: 1px solid var(--border-soft);
+      padding: 80px 0 56px;
+      text-align: center;
+      background: var(--bg-soft);
+    }
+    .footer-brand {
+      display: inline-flex;
+      align-items: center;
+      gap: 11px;
+      font-weight: 800;
+      font-size: 1.5rem;
+      color: #f0f6fc;
+      letter-spacing: -0.02em;
+    }
+    .footer-brand .mark { width: 30px; height: 30px; color: var(--accent); }
+    .site-footer .tag { margin-top: 12px; color: var(--text-muted); }
+    .site-footer .install { margin: 30px auto 0; }
+    .footer-links {
+      margin-top: 34px;
+      display: flex;
+      gap: 30px;
+      justify-content: center;
+      flex-wrap: wrap;
+    }
+    .footer-links a {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--text-muted);
+      font-weight: 500;
+      font-size: 0.96rem;
+      transition: color 0.18s ease;
+    }
+    .footer-links a:hover { color: var(--text); }
+    .footer-links a svg { width: 17px; height: 17px; }
+    .copyright {
+      margin-top: 38px;
+      padding-top: 28px;
+      border-top: 1px solid var(--border-soft);
+      color: var(--text-dim);
+      font-size: 0.88rem;
+    }
+    .copyright a { color: var(--text-muted); }
+    .copyright a:hover { color: var(--accent); }
+
+    /* ---------- Scroll reveal ---------- */
+    .reveal {
+      opacity: 0;
+      transform: translateY(26px);
+      transition: opacity 0.7s cubic-bezier(0.16, 1, 0.3, 1), transform 0.7s cubic-bezier(0.16, 1, 0.3, 1);
+      will-change: opacity, transform;
+    }
+    .reveal.is-visible { opacity: 1; transform: none; }
+    .cards .reveal:nth-child(2) { transition-delay: 0.09s; }
+    .cards .reveal:nth-child(3) { transition-delay: 0.18s; }
+    .steps .step.reveal:nth-of-type(3) { transition-delay: 0.09s; }
+    .steps .step.reveal:nth-of-type(5) { transition-delay: 0.18s; }
+
+    /* ---------- Responsive ---------- */
+    @media (max-width: 860px) {
+      .nav-links .link { display: none; }
+      .cards { grid-template-columns: 1fr; gap: 16px; }
+      .steps { flex-direction: column; }
+      .step-arrow { width: auto; height: 28px; transform: rotate(90deg); }
+      .section { padding: 72px 0; }
+      .hero { padding: 140px 0 80px; }
+      .section-head { margin-bottom: 40px; }
+    }
+    @media (max-width: 480px) {
+      .container { padding-inline: 18px; }
+      .hero-cta .btn { width: 100%; }
+      .install { width: 100%; }
+      .install-cmd { white-space: normal; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      html { scroll-behavior: auto; }
+      .reveal { opacity: 1 !important; transform: none !important; transition: none !important; }
+      .btn:hover, .card:hover, .step:hover { transform: none; }
+    }
+  </style>
+</head>
+<body id="top">
+
+  <!-- ============ HEADER ============ -->
+  <header class="site-header" id="siteHeader">
+    <div class="container">
+      <a class="brand" href="#top" aria-label="AgentBrake home">
+        <svg class="mark" viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M7.5 2h9L22 7.5v9L16.5 22h-9L2 16.5v-9z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/>
+          <path d="M10 9v6M14 9v6" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+        </svg>
+        AgentBrake
+      </a>
+      <nav class="nav-links" aria-label="Primary">
+        <a class="link" href="#problem">Problem</a>
+        <a class="link" href="#solution">Solution</a>
+        <a class="link" href="#how">How it works</a>
+        <a class="link" href="#compare">Compare</a>
+        <a class="btn btn-secondary btn-sm" href="https://github.com/BOSSMETALIQUE/agentbrake" target="_blank" rel="noopener">
+          <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 .5C5.7.5.5 5.7.5 12c0 5.1 3.3 9.4 7.9 10.9.6.1.8-.2.8-.5v-2c-3.2.7-3.9-1.4-3.9-1.4-.5-1.3-1.3-1.7-1.3-1.7-1-.7.1-.7.1-.7 1.2.1 1.8 1.2 1.8 1.2 1 1.8 2.7 1.3 3.4 1 .1-.8.4-1.3.7-1.6-2.6-.3-5.3-1.3-5.3-5.7 0-1.3.5-2.3 1.2-3.1-.1-.3-.5-1.5.1-3.1 0 0 1-.3 3.3 1.2a11.4 11.4 0 0 1 6 0C17.3 4.7 18.3 5 18.3 5c.6 1.6.2 2.8.1 3.1.8.8 1.2 1.8 1.2 3.1 0 4.4-2.7 5.4-5.3 5.7.4.4.8 1.1.8 2.2v3.3c0 .3.2.6.8.5 4.6-1.5 7.9-5.8 7.9-10.9C23.5 5.7 18.3.5 12 .5z"/></svg>
+          GitHub
+        </a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+
+    <!-- ============ HERO ============ -->
+    <section class="hero">
+      <div class="container">
+        <span class="hero-pill reveal"><span class="dot"></span> Open source · MIT · Python 3.9+</span>
+        <h1 class="reveal">AgentBrake</h1>
+        <p class="subtitle reveal">The circuit breaker for LLM agents in production.</p>
+
+        <div class="install reveal" role="group" aria-label="Install command">
+          <span class="install-prompt" aria-hidden="true">$</span>
+          <code class="install-cmd">pip install agentbrake</code>
+          <button class="copy-btn" type="button" data-copy="pip install agentbrake" aria-label="Copy install command">
+            <svg class="ico-copy" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+            <svg class="ico-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>
+            <span class="copy-label">Copy</span>
+          </button>
+        </div>
+
+        <div class="hero-cta reveal">
+          <a class="btn btn-primary" href="https://github.com/BOSSMETALIQUE/agentbrake" target="_blank" rel="noopener">
+            <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 .5C5.7.5.5 5.7.5 12c0 5.1 3.3 9.4 7.9 10.9.6.1.8-.2.8-.5v-2c-3.2.7-3.9-1.4-3.9-1.4-.5-1.3-1.3-1.7-1.3-1.7-1-.7.1-.7.1-.7 1.2.1 1.8 1.2 1.8 1.2 1 1.8 2.7 1.3 3.4 1 .1-.8.4-1.3.7-1.6-2.6-.3-5.3-1.3-5.3-5.7 0-1.3.5-2.3 1.2-3.1-.1-.3-.5-1.5.1-3.1 0 0 1-.3 3.3 1.2a11.4 11.4 0 0 1 6 0C17.3 4.7 18.3 5 18.3 5c.6 1.6.2 2.8.1 3.1.8.8 1.2 1.8 1.2 3.1 0 4.4-2.7 5.4-5.3 5.7.4.4.8 1.1.8 2.2v3.3c0 .3.2.6.8.5 4.6-1.5 7.9-5.8 7.9-10.9C23.5 5.7 18.3.5 12 .5z"/></svg>
+            View on GitHub
+          </a>
+          <a class="btn btn-secondary" href="https://youtu.be/uHbjP2SGMsI" target="_blank" rel="noopener">
+            <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>
+            Watch Demo
+          </a>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ PROBLEM ============ -->
+    <section class="section" id="problem">
+      <div class="container">
+        <div class="section-head center reveal">
+          <span class="eyebrow">The problem</span>
+          <h2 class="title">Your agents are running unsupervised.</h2>
+          <p class="lead">Observability tells you it happened. AgentBrake stops it from happening.</p>
+        </div>
+        <div class="cards">
+          <article class="card reveal">
+            <div class="ico" aria-hidden="true">🔄</div>
+            <h3>Infinite Loops</h3>
+            <p>Agent retries the same failing call 50 times before giving up.</p>
+          </article>
+          <article class="card reveal">
+            <div class="ico" aria-hidden="true">💸</div>
+            <h3>Budget Blowups</h3>
+            <p>A runaway agent burns $200 in tokens overnight.</p>
+          </article>
+          <article class="card reveal">
+            <div class="ico" aria-hidden="true">🚨</div>
+            <h3>Privilege Escalation</h3>
+            <p>Agent calls <code>delete_database</code> because a user prompt-injected it.</p>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ SOLUTION ============ -->
+    <section class="section" id="solution">
+      <div class="container">
+        <div class="section-head center reveal">
+          <span class="eyebrow">The solution</span>
+          <h2 class="title">3 lines of code. Full protection.</h2>
+          <p class="lead">Wrap your tool-dispatch function. If the agent loops, blows the budget, or calls something off the allowlist, it stops — before the tool runs.</p>
+        </div>
+
+        <div class="code-window reveal">
+          <div class="code-bar">
+            <div class="dots" aria-hidden="true"><span></span><span></span><span></span></div>
+            <span class="fname">agent.py</span>
+          </div>
+          <pre class="code"><code><span class="tok-kw">import</span> agentbrake
+
+agentbrake.init(allowed_tools=[<span class="tok-str">"search"</span>, <span class="tok-str">"read_file"</span>], budget_usd=<span class="tok-num">5.0</span>)
+
+<span class="tok-dec">@agentbrake.guard</span>()
+<span class="tok-kw">def</span> <span class="tok-fn">call_tool</span>(name: <span class="tok-builtin">str</span>, args: <span class="tok-builtin">dict</span>):
+    <span class="tok-kw">return</span> my_tools[name](**args)</code></pre>
+        </div>
+        <p class="solution-note reveal">That's it. On a trip, <code>call_tool</code> raises <code>AgentBrakeInterrupt</code> 🛑 instead of executing — catch it and handle the <code>LOOP</code>, <code>BUDGET</code>, or <code>ESCALATION</code> reason however you like.</p>
+      </div>
+    </section>
+
+    <!-- ============ HOW IT WORKS ============ -->
+    <section class="section" id="how">
+      <div class="container">
+        <div class="section-head center reveal">
+          <span class="eyebrow">How it works</span>
+          <h2 class="title"><span class="nb">Detect →</span> <span class="nb">Interrupt →</span> <span class="nb">Validate</span></h2>
+          <p class="lead">Every tool call passes through the SDK before it ever runs.</p>
+        </div>
+
+        <div class="steps">
+          <article class="step reveal">
+            <span class="step-num">01</span>
+            <div class="ico" aria-hidden="true">🔍</div>
+            <h3>Detect</h3>
+            <p>SDK monitors every tool call for loops, budget overruns, and unauthorized tools.</p>
+          </article>
+          <div class="step-arrow" aria-hidden="true">→</div>
+          <article class="step reveal">
+            <span class="step-num">02</span>
+            <div class="ico" aria-hidden="true">🛑</div>
+            <h3>Interrupt</h3>
+            <p>Stops the agent mid-run before damage happens. Not after.</p>
+          </article>
+          <div class="step-arrow" aria-hidden="true">→</div>
+          <article class="step reveal">
+            <span class="step-num">03</span>
+            <div class="ico" aria-hidden="true">✅</div>
+            <h3>Validate</h3>
+            <p>Sends a link to Slack/browser. Human approves or kills in one click.</p>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ COMPARISON ============ -->
+    <section class="section" id="compare">
+      <div class="container">
+        <div class="section-head center reveal">
+          <span class="eyebrow">Comparison</span>
+          <h2 class="title">Enforcement, not just observability.</h2>
+          <p class="lead">The others show you what your agent did. AgentBrake is the brake pedal — it acts before the tool executes.</p>
+        </div>
+
+        <div class="table-wrap reveal">
+          <div class="table-scroll">
+            <table>
+              <thead>
+                <tr>
+                  <th scope="col">Tool</th>
+                  <th scope="col">Approach</th>
+                  <th scope="col">When it acts</th>
+                  <th scope="col">Self-hosted</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr class="is-agentbrake">
+                  <td>
+                    <span class="tname">
+                      <svg class="mark" viewBox="0 0 24 24" aria-hidden="true"><path d="M7.5 2h9L22 7.5v9L16.5 22h-9L2 16.5v-9z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M10 9v6M14 9v6" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+                      AgentBrake
+                    </span>
+                    <span class="badge-best">Best</span>
+                  </td>
+                  <td>Enforcement (circuit breaker)</td>
+                  <td><span class="hl">Before damage (mid-run)</span></td>
+                  <td><span class="yes">✓ Yes (MIT)</span></td>
+                </tr>
+                <tr>
+                  <td>LangSmith</td>
+                  <td>Observability + guardrails</td>
+                  <td>After + during</td>
+                  <td><span class="no">✗ No (cloud)</span></td>
+                </tr>
+                <tr>
+                  <td>Helicone</td>
+                  <td>Observability + caching</td>
+                  <td>After</td>
+                  <td><span class="yes">✓ Yes (open core)</span></td>
+                </tr>
+                <tr>
+                  <td>AgentOps</td>
+                  <td>Observability + replay</td>
+                  <td>After</td>
+                  <td><span class="no">✗ No (cloud)</span></td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+        <p class="compare-note reveal">We don't compete with these — we complement them. Run AgentBrake as your last line of defense before the tool actually executes.</p>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- ============ FOOTER ============ -->
+  <footer class="site-footer">
+    <div class="container">
+      <div class="footer-brand reveal">
+        <svg class="mark" viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M7.5 2h9L22 7.5v9L16.5 22h-9L2 16.5v-9z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/>
+          <path d="M10 9v6M14 9v6" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+        </svg>
+        AgentBrake
+      </div>
+      <p class="tag reveal">The circuit breaker for LLM agents in production.</p>
+
+      <div class="install reveal" role="group" aria-label="Install command">
+        <span class="install-prompt" aria-hidden="true">$</span>
+        <code class="install-cmd">pip install agentbrake</code>
+        <button class="copy-btn" type="button" data-copy="pip install agentbrake" aria-label="Copy install command">
+          <svg class="ico-copy" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+          <svg class="ico-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>
+          <span class="copy-label">Copy</span>
+        </button>
+      </div>
+
+      <nav class="footer-links reveal" aria-label="Footer">
+        <a href="https://github.com/BOSSMETALIQUE/agentbrake" target="_blank" rel="noopener">
+          <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 .5C5.7.5.5 5.7.5 12c0 5.1 3.3 9.4 7.9 10.9.6.1.8-.2.8-.5v-2c-3.2.7-3.9-1.4-3.9-1.4-.5-1.3-1.3-1.7-1.3-1.7-1-.7.1-.7.1-.7 1.2.1 1.8 1.2 1.8 1.2 1 1.8 2.7 1.3 3.4 1 .1-.8.4-1.3.7-1.6-2.6-.3-5.3-1.3-5.3-5.7 0-1.3.5-2.3 1.2-3.1-.1-.3-.5-1.5.1-3.1 0 0 1-.3 3.3 1.2a11.4 11.4 0 0 1 6 0C17.3 4.7 18.3 5 18.3 5c.6 1.6.2 2.8.1 3.1.8.8 1.2 1.8 1.2 3.1 0 4.4-2.7 5.4-5.3 5.7.4.4.8 1.1.8 2.2v3.3c0 .3.2.6.8.5 4.6-1.5 7.9-5.8 7.9-10.9C23.5 5.7 18.3.5 12 .5z"/></svg>
+          GitHub
+        </a>
+        <a href="https://pypi.org/project/agentbrake/" target="_blank" rel="noopener">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><path d="m3.3 7 8.7 5 8.7-5M12 22V12"/></svg>
+          PyPI
+        </a>
+        <a href="https://youtu.be/uHbjP2SGMsI" target="_blank" rel="noopener">
+          <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>
+          Demo
+        </a>
+      </nav>
+
+      <p class="copyright reveal">
+        Built by <a href="https://github.com/BOSSMETALIQUE" target="_blank" rel="noopener">BOSSMETALIQUE</a> · MIT License · Feedback welcome on GitHub Issues
+      </p>
+    </div>
+  </footer>
+
+  <noscript>
+    <style>.reveal { opacity: 1 !important; transform: none !important; }</style>
+  </noscript>
+
+  <script>
+    (function () {
+      "use strict";
+
+      /* Sticky header shadow on scroll */
+      var header = document.getElementById("siteHeader");
+      function onScroll() {
+        if (header) header.classList.toggle("scrolled", window.scrollY > 8);
+      }
+      onScroll();
+      window.addEventListener("scroll", onScroll, { passive: true });
+
+      /* Scroll-reveal via IntersectionObserver */
+      var revealEls = document.querySelectorAll(".reveal");
+      if ("IntersectionObserver" in window) {
+        var io = new IntersectionObserver(function (entries) {
+          entries.forEach(function (entry) {
+            if (entry.isIntersecting) {
+              entry.target.classList.add("is-visible");
+              io.unobserve(entry.target);
+            }
+          });
+        }, { threshold: 0.12, rootMargin: "0px 0px -40px 0px" });
+        revealEls.forEach(function (el) { io.observe(el); });
+      } else {
+        revealEls.forEach(function (el) { el.classList.add("is-visible"); });
+      }
+
+      /* Copy-to-clipboard buttons */
+      document.querySelectorAll("[data-copy]").forEach(function (btn) {
+        btn.addEventListener("click", function () {
+          var text = btn.getAttribute("data-copy");
+          var label = btn.querySelector(".copy-label");
+          var done = function (ok) {
+            btn.classList.add("copied");
+            if (label) label.textContent = ok ? "Copied!" : "Press Ctrl+C";
+            window.setTimeout(function () {
+              btn.classList.remove("copied");
+              if (label) label.textContent = "Copy";
+            }, 1800);
+          };
+
+          if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(text).then(function () { done(true); }, function () { fallback(); });
+          } else {
+            fallback();
+          }
+
+          function fallback() {
+            var ta = document.createElement("textarea");
+            ta.value = text;
+            ta.setAttribute("readonly", "");
+            ta.style.position = "fixed";
+            ta.style.opacity = "0";
+            document.body.appendChild(ta);
+            ta.select();
+            var ok = false;
+            try { ok = document.execCommand("copy"); } catch (e) { ok = false; }
+            document.body.removeChild(ta);
+            done(ok);
+          }
+        });
+      });
+    })();
+  </script>
+</body>
+</html>
