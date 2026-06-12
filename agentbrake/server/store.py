@@ -7,13 +7,27 @@ and FastAPI dependency injection scopes a fresh connection per request).
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
 from uuid import uuid4
 
-DEFAULT_DB_PATH = Path(__file__).resolve().parent.parent / "agentbrake.db"
+
+def _default_db_path() -> Path:
+    """CWD-relative by default; the AGENTBRAKE_DB env var overrides it.
+
+    Must NOT live inside the installed package directory — site-packages may
+    be read-only and is shared across projects.
+    """
+    env = os.environ.get("AGENTBRAKE_DB")
+    if env:
+        return Path(env).expanduser()
+    return Path.cwd() / "agentbrake.db"
+
+
+DEFAULT_DB_PATH = _default_db_path()
 
 
 def _connect(db_path: Path) -> sqlite3.Connection:

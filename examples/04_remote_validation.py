@@ -7,7 +7,7 @@ Approve / Kill in the browser.
 
 Prerequisites:
   1. Start the backend in another terminal:
-       uvicorn server.main:app --port 8000
+       uvicorn agentbrake.server.main:app --port 8000
   2. ANTHROPIC_API_KEY in .env
 
 Run: python examples/04_remote_validation.py
@@ -62,7 +62,7 @@ def main() -> None:
         print()
         print(f"ERROR: Backend not reachable at {API_URL}.")
         print("Start it in another terminal with:")
-        print("    uvicorn server.main:app --port 8000")
+        print("    uvicorn agentbrake.server.main:app --port 8000")
         sys.exit(1)
 
     agentbrake.init(

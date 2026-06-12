@@ -47,7 +47,7 @@ Prepare three terminal "tabs" (Windows Terminal supports this natively). In each
 In a fourth terminal (off-screen, never shown), have uvicorn already running:
 
 ```
-.\.venv\Scripts\python.exe -m uvicorn server.main:app --port 8000 --log-level warning
+.\.venv\Scripts\python.exe -m uvicorn agentbrake.server.main:app --port 8000 --log-level warning
 ```
 
 Verify with `curl http://localhost:8000/docs` before hitting record.

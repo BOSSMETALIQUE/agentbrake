@@ -7,8 +7,8 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from server import main as server_main
-from server import store
+from agentbrake.server import main as server_main
+from agentbrake.server import store
 
 
 @pytest.fixture()
@@ -96,3 +96,21 @@ def test_decide_invalid_value(client: TestClient) -> None:
 def test_get_missing_interrupt_returns_404(client: TestClient) -> None:
     assert client.get("/interrupts/does-not-exist/status").status_code == 404
     assert client.get("/interrupts/does-not-exist").status_code == 404
+
+
+# --- Default DB path resolution -------------------------------------------
+
+def test_default_db_path_is_cwd_relative(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("AGENTBRAKE_DB", raising=False)
+    monkeypatch.chdir(tmp_path)
+    assert store._default_db_path() == tmp_path / "agentbrake.db"
+
+
+def test_agentbrake_db_env_var_overrides_db_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = tmp_path / "custom" / "brake.db"
+    monkeypatch.setenv("AGENTBRAKE_DB", str(target))
+    assert store._default_db_path() == target

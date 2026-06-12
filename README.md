@@ -8,7 +8,7 @@
   <a href="https://github.com/BOSSMETALIQUE/agentbrake/actions"><img alt="Tests" src="https://github.com/BOSSMETALIQUE/agentbrake/actions/workflows/tests.yml/badge.svg"></a>
 </p>
 
-> **⚡ Status:** v0.0.1 — Local mode is stable (15/15 tests passing). LangGraph examples and remote mode UI work end-to-end. PyPI release coming soon. Looking for early users to validate the API.
+> **⚡ Status:** v0.0.2 — Local mode is stable (29/29 tests passing). LangGraph examples and remote mode UI work end-to-end. PyPI release coming soon. Looking for early users to validate the API.
 
 ## The problem
 
@@ -38,6 +38,20 @@ def call_tool(name: str, args: dict):
 
 That's it. If your agent loops, blows the budget, or tries to call something outside the allowlist, `call_tool` raises `AgentBrakeInterrupt` 🛑 instead of executing.
 
+For long-lived processes that launch many agent tasks, give each task its own isolated run — fresh budget, fresh call history, nothing leaks from one run to the next (runs in separate threads or asyncio tasks are isolated too):
+
+```python
+with agentbrake.run(budget_usd=5.0) as r:
+    agent.invoke("task 1")   # guarded calls inside the block use this run
+
+with agentbrake.run(budget_usd=5.0) as r:
+    agent.invoke("task 2")   # fresh state — task 1's spend doesn't count here
+
+print(r.state.total_cost_usd, len(r.state.calls))
+```
+
+Arguments omitted from `run()` are inherited from `init()`, so configure the allowlist once and open a cheap fresh run per task. Calling `init()` again also resets the default state.
+
 Catch the interrupt to handle it gracefully:
 
 ```python
@@ -59,7 +73,9 @@ except AgentBrakeInterrupt as e:
 
 ## How it works
 
-The `@guard()` decorator wraps your tool-dispatch function and keeps a `RunState` in memory (run id, total cost, full call history). Every call passes through three detectors in order — escalation → loop → budget — and any hit raises `AgentBrakeInterrupt` *before* the underlying tool runs. Loop detection uses a SHA-256 hash over the JSON-sorted `(name, args)` payload, so argument ordering doesn't fool it.
+The `@guard()` decorator wraps your tool-dispatch function and keeps a per-run `RunState` (run id, total cost, full call history). Every call passes through three detectors in order — escalation → loop → budget — and any hit raises `AgentBrakeInterrupt` *before* the underlying tool runs. Loop detection uses a SHA-256 hash over the JSON-sorted `(name, args)` payload, so argument ordering doesn't fool it.
+
+Every attempt is recorded **before** the tool executes (outcome `pending` → `ok` or `error`), so calls that raise still count toward loop detection and budget — an agent retrying the same failing call 50 times gets stopped just like one retrying a succeeding call.
 
 Local mode is zero-config and runs entirely in-process. A remote mode (backend + human-in-the-loop validation UI) is on the roadmap.
 
@@ -104,8 +120,10 @@ The SDK is the only piece you import. In local mode (default), it raises on dete
 Start the backend:
 
 ```bash
-uvicorn server.main:app --reload --port 8000
+uvicorn agentbrake.server.main:app --reload --port 8000
 ```
+
+The backend stores interrupts in a SQLite file named `agentbrake.db` in the directory you launch it from. Set the `AGENTBRAKE_DB` environment variable to use a different path.
 
 Point the SDK at it:
 

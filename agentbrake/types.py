@@ -22,6 +22,8 @@ class ToolCall(BaseModel):
     args: Dict[str, Any] = Field(default_factory=dict)
     timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     cost_usd: float = 0.0
+    outcome: str = "pending"  # pending -> ok | error
+    error: Optional[str] = None  # repr of the exception when outcome == "error"
 
 
 class RunState(BaseModel):

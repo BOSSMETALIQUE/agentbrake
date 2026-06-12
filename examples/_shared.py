@@ -121,10 +121,10 @@ def build_agent(tools: List, model: str = "claude-haiku-4-5", max_iterations: in
 
 def run_state_snapshot() -> dict:
     """Read the internal run state for end-of-demo summary printing."""
-    cfg = agentbrake._config  # type: ignore[attr-defined]
-    if cfg is None or cfg.run_state is None:
+    active = agentbrake.current_run()
+    if active is None:
         return {}
-    rs = cfg.run_state
+    rs = active.state
     return {
         "run_id": rs.run_id,
         "num_calls": len(rs.calls),

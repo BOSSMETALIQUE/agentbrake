@@ -13,6 +13,8 @@ from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 
+from agentbrake import __version__
+
 from . import store
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -25,7 +27,7 @@ async def _lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="AgentBrake", version="0.0.1", lifespan=_lifespan)
+app = FastAPI(title="AgentBrake", version=__version__, lifespan=_lifespan)
 
 
 # ----- Request / response models -----------------------------------------
