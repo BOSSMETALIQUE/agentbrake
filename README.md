@@ -8,7 +8,7 @@
   <a href="https://github.com/BOSSMETALIQUE/agentbrake/actions"><img alt="Tests" src="https://github.com/BOSSMETALIQUE/agentbrake/actions/workflows/tests.yml/badge.svg"></a>
 </p>
 
-> **⚡ Status:** v0.0.2 — Local mode is stable (29/29 tests passing). LangGraph examples and remote mode UI work end-to-end. PyPI release coming soon. Looking for early users to validate the API.
+> **⚡ Status:** v0.1.0 — Local mode is stable (55/55 tests passing). Remote mode is secured with split SDK/approver secrets, and every human decision now produces a **signed, hash-chained receipt** (see [Verifiable receipts](#verifiable-receipts)). PyPI release coming soon. Looking for early users to validate the API.
 
 ## The problem
 
@@ -112,6 +112,7 @@ The SDK is the only piece you import. In local mode (default), it raises on dete
 - [x] Local mode SDK (loops, budget, escalation)
 - [ ] LangChain integration examples
 - [x] FastAPI backend with dynamic validation UI
+- [x] Signed, hash-chained attestations (verifiable receipts)
 - [ ] Slack / webhook integration for human-in-the-loop
 - [ ] PyPI release
 
@@ -168,6 +169,56 @@ AgentBrake closes this with a privilege split:
 - **`/interrupts` and `/status` require the SDK secret**, so a stranger who finds the URL can't forge interrupt records or enumerate runs.
 - **The validation page never embeds the approver secret.** The agent knows the interrupt id and can `GET` the HTML page, so the secret is supplied by the human (typed, or read client-side from a `?token=` link) and is never rendered into the page server-side.
 - **Fail closed.** If the backend is unreachable or rejects the SDK, the run stops rather than continuing unguarded.
+
+## Verifiable receipts
+
+Stopping an agent is enforcement. *Proving* what a human decided — on what information, at what time — is accountability. As of v0.1.0, every approve/kill decision produces a **signed, tamper-evident attestation**: a receipt you can hand to an auditor, a regulator, or your future self.
+
+When a human decides, the server mints an attestation and appends it to a hash-chained log:
+
+```json
+{
+  "version": "1",
+  "seq": 7,
+  "interrupt_id": "…",
+  "run_id": "…",
+  "agent_id": "support-bot-prod",
+  "decision": "kill",
+  "reason": "escalation",
+  "tool": "delete_database",
+  "tool_args_digest": "sha256:…",   // digest of the tool call, never the raw args
+  "created_at": "2026-06-15T12:00:00+00:00",
+  "decided_at": "2026-06-15T12:00:18+00:00",
+  "pending_seconds": 18.0,
+  "info_digest": "sha256:…",        // digest of exactly what the approver was shown
+  "info_summary": { "tool": "delete_database", "total_cost_usd": 0.07, "num_calls": 4 },
+  "prev_hash": "…"                  // entry hash of attestation #6
+}
+```
+
+Two layers of tamper-evidence:
+
+- **Per-record signature.** Each attestation is signed with HMAC-SHA256 under a server-side key (`AGENTBRAKE_SIGNING_KEY`, or generated and printed in the server banner on startup). Alter any field and the signature no longer verifies — and you can't forge a new signature without the key.
+- **Hash chain.** Each attestation embeds `prev_hash`, the entry hash of the one before it. You can't delete or reorder an entry without breaking the next link, and the monotonic `seq` makes a missing entry show up as a gap. The first entry chains to a fixed genesis hash.
+
+Only digests of the tool call and the displayed info are stored — never raw arguments — so a receipt is safe to expose while still binding the decision to exactly what was acted on.
+
+### Endpoints
+
+| Endpoint | Returns |
+|---|---|
+| `GET /attestations/{interrupt_id}` | The signed receipt for one interrupt, with a `signature_valid` flag |
+| `GET /attestations` | The full chain plus a `verified` integrity verdict |
+| `GET /attestations/verify` | `{ ok, count, error }` — verifies the whole chain |
+
+These read-only endpoints are unauthenticated by design: a proof is meant to be independently verifiable. Verifying a signature requires the signing key, which never leaves the server, so set `AGENTBRAKE_SIGNING_KEY` to a stable value if you want receipts to stay verifiable across restarts.
+
+```python
+from agentbrake.server import store, attest
+
+ok, error = attest.verify_chain(store.get_attestation_chain())
+assert ok, error
+```
 
 ## Why AgentBrake vs LangSmith / Helicone / AgentOps
 

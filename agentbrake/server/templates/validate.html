@@ -241,11 +241,13 @@
       <div class="done">
         <span class="badge {{ reason_class }}">{{ record.reason }}</span>
         <p>✓ Approved at {{ record.decided_at }}</p>
+        <p class="sub">🧾 Signed receipt: <a href="/attestations/{{ record.id }}" style="color: var(--escalation);">/attestations/{{ record.id }}</a></p>
       </div>
     {% else %}
       <div class="done">
         <span class="badge {{ reason_class }}">{{ record.reason }}</span>
         <p>✗ Killed at {{ record.decided_at }}</p>
+        <p class="sub">🧾 Signed receipt: <a href="/attestations/{{ record.id }}" style="color: var(--escalation);">/attestations/{{ record.id }}</a></p>
       </div>
     {% endif %}
   </div>

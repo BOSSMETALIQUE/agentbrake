@@ -16,7 +16,7 @@ from pydantic import BaseModel, Field
 
 from agentbrake import __version__
 
-from . import security, store
+from . import attest, security, store
 
 BASE_DIR = Path(__file__).resolve().parent
 TEMPLATES = Jinja2Templates(directory=str(BASE_DIR / "templates"))
@@ -25,8 +25,9 @@ TEMPLATES = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
     store.init_db()
-    # Secrets go to the server's OWN console only — never to the SDK/agent.
+    # Secrets + signing key go to the server's OWN console only — never the SDK.
     print(security.startup_banner(), file=sys.stderr, flush=True)
+    print(attest.signing_banner(), file=sys.stderr, flush=True)
     yield
 
 
@@ -126,9 +127,16 @@ def view_interrupt(interrupt_id: str, request: Request) -> HTMLResponse:
 def decide(interrupt_id: str, payload: DecideIn) -> StatusOut:
     if payload.decision not in {"approve", "kill"}:
         raise HTTPException(status_code=400, detail="decision must be 'approve' or 'kill'")
-    new_status = store.decide_interrupt(interrupt_id, payload.decision)
-    if new_status is None:
+    result = store.decide_interrupt(interrupt_id, payload.decision)
+    if result is None:
         raise HTTPException(status_code=404, detail="interrupt not found")
+    new_status, changed = result
+    if changed:
+        # A human just decided: mint the signed, chained receipt. Re-read the
+        # interrupt so the attestation captures the persisted decided_at.
+        decided = store.get_interrupt(interrupt_id)
+        if decided is not None:
+            attest.record_decision(decided, payload.decision)
     return StatusOut(status=new_status)
 
 
@@ -142,3 +150,55 @@ def get_status(interrupt_id: str) -> StatusOut:
     if record is None:
         raise HTTPException(status_code=404, detail="interrupt not found")
     return StatusOut(status=record["status"])
+
+
+# ----- Attestations (verifiable receipts) --------------------------------
+#
+# These read-only endpoints are intentionally unauthenticated: a receipt is a
+# proof meant to be independently verifiable, and it stores only digests of the
+# tool call / displayed info, never raw args. Verifying needs the signing key,
+# which never leaves the server.
+
+def _attestation_view(record: Dict[str, Any]) -> Dict[str, Any]:
+    """Shape a stored attestation row into an API response with a verify flag."""
+    return {
+        "seq": record["seq"],
+        "interrupt_id": record["interrupt_id"],
+        "attestation": record["attestation"],
+        "signature": record["signature"],
+        "prev_hash": record["prev_hash"],
+        "entry_hash": record["entry_hash"],
+        "signature_valid": attest.verify_signature(
+            record["attestation_json"], record["signature"]
+        ),
+    }
+
+
+@app.get("/attestations/verify")
+def verify_attestation_chain() -> Dict[str, Any]:
+    """Verify the integrity of the entire attestation chain."""
+    chain = store.get_attestation_chain()
+    ok, error = attest.verify_chain(chain)
+    return {"ok": ok, "count": len(chain), "error": error}
+
+
+@app.get("/attestations")
+def list_attestations() -> Dict[str, Any]:
+    """Return the full attestation chain plus a chain-integrity verdict."""
+    chain = store.get_attestation_chain()
+    ok, error = attest.verify_chain(chain)
+    return {
+        "count": len(chain),
+        "verified": ok,
+        "error": error,
+        "chain": [_attestation_view(r) for r in chain],
+    }
+
+
+@app.get("/attestations/{interrupt_id}")
+def get_attestation(interrupt_id: str) -> Dict[str, Any]:
+    """Return the signed attestation (receipt) for one interrupt."""
+    record = store.get_attestation(interrupt_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="attestation not found")
+    return _attestation_view(record)
