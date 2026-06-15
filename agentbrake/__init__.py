@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import functools
+import os
 import sys
 from contextvars import ContextVar, Token
 from typing import Any, Callable, List, Optional
@@ -11,7 +12,7 @@ from .client import AgentBrakeClient
 from .detectors import BudgetDetector, EscalationDetector, LoopDetector
 from .types import AgentBrakeInterrupt, InterruptReason, RunState, ToolCall
 
-__version__ = "0.0.2"
+__version__ = "0.0.3"
 
 __all__ = [
     "init",
@@ -190,18 +191,33 @@ def _handle_remote_interrupt(
             reason=reason.value.upper(),
             context=context,
         )
-    except Exception as e:  # noqa: BLE001 — backend unreachable, fail closed
+    except Exception as e:  # noqa: BLE001 — backend unreachable/unauthorized, fail closed
         print(
-            f"🛑 AgentBrake [{reason.value.upper()}] detected, but backend at "
-            f"{active.api_url} is unreachable ({e}). Stopping run.",
+            f"🛑 AgentBrake [{reason.value.upper()}] detected, but the backend at "
+            f"{active.api_url} could not be reached or authenticated ({e}). "
+            f"Stopping run.",
             file=sys.stderr,
         )
         return False
 
-    print(
-        f"🛑 {reason.value.upper()} detected. Validate or kill: {url}",
-        file=sys.stderr,
-    )
+    # SECURITY: do NOT print the validation URL into the agent's own output by
+    # default. The guarded agent runs in THIS process; if it can read the URL
+    # it can drive the human-in-the-loop page itself. (Self-approval is already
+    # blocked server-side — the agent lacks the approver secret — but we keep
+    # the URL out of its reach as defense in depth.) In production, deliver the
+    # URL out-of-band: Slack, email, PagerDuty, etc. For local dev, set
+    # AGENTBRAKE_SHOW_URL=1 to print it.
+    if os.environ.get("AGENTBRAKE_SHOW_URL") == "1":
+        print(
+            f"🛑 {reason.value.upper()} detected. Validate or kill: {url}",
+            file=sys.stderr,
+        )
+    else:
+        print(
+            f"🛑 {reason.value.upper()} detected. Interrupt {interrupt_id} created; "
+            f"awaiting human decision (delivered out-of-band).",
+            file=sys.stderr,
+        )
 
     try:
         decision = active.client.wait_for_decision(
@@ -215,7 +231,7 @@ def _handle_remote_interrupt(
 
     if decision == "approved":
         print(
-            f"✓ AgentBrake [{reason.value.upper()}] resumed by human ({url})",
+            f"✓ AgentBrake [{reason.value.upper()}] resumed by human.",
             file=sys.stderr,
         )
         return True

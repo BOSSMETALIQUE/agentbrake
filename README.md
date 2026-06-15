@@ -105,7 +105,7 @@ flowchart TD
     class E interrupt
 ```
 
-The SDK is the only piece you import. In local mode (default), it raises on detection. In remote mode, it sends the interrupt context to the backend, prints a validation URL in the terminal, and polls for a human decision. Approve → the tool executes. Kill → `AgentBrakeInterrupt` is raised.
+The SDK is the only piece you import. In local mode (default), it raises on detection. In remote mode, it sends the interrupt context to the backend and polls for a human decision. Approve → the tool executes. Kill → `AgentBrakeInterrupt` is raised. The agent's process is never given the credential to approve its own interruption (see [Security model](#security-model-remote-mode)).
 
 ## Roadmap
 
@@ -117,18 +117,30 @@ The SDK is the only piece you import. In local mode (default), it raises on dete
 
 ## Remote mode (human-in-the-loop)
 
-Start the backend:
+Remote mode is protected by **two separate shared secrets**, because the guarded agent runs in the same process as the SDK. If the SDK could approve, the agent could approve itself — see [Security model](#security-model-remote-mode).
+
+| Secret | Env var | Who holds it | Authorizes |
+|---|---|---|---|
+| **SDK secret** | `AGENTBRAKE_SDK_SECRET` | server **and** SDK | `POST /interrupts` (create), `GET /status` (poll) |
+| **Approver secret** | `AGENTBRAKE_APPROVER_SECRET` | server **and** human only — *never* the SDK | `POST /decide` (approve / kill) |
+
+Start the backend. If you don't set the secrets, it generates them and prints them to **its own console** (never to the SDK):
 
 ```bash
+# Optional: set them explicitly. Otherwise the server generates + prints them.
+export AGENTBRAKE_SDK_SECRET=shared-with-the-sdk
+export AGENTBRAKE_APPROVER_SECRET=keep-this-private
 uvicorn agentbrake.server.main:app --reload --port 8000
 ```
 
-The backend stores interrupts in a SQLite file named `agentbrake.db` in the directory you launch it from. Set the `AGENTBRAKE_DB` environment variable to use a different path.
+The backend stores interrupts in a SQLite file named `agentbrake.db` in the directory you launch it from. Set `AGENTBRAKE_DB` to use a different path.
 
-Point the SDK at it:
+Point the SDK at it — the SDK only needs the **SDK secret**:
 
 ```python
-import agentbrake
+import os, agentbrake
+
+os.environ["AGENTBRAKE_SDK_SECRET"] = "shared-with-the-sdk"  # or set in the shell
 
 agentbrake.init(
     allowed_tools=["search"],
@@ -137,11 +149,25 @@ agentbrake.init(
     api_url="http://localhost:8000",
 )
 
-# Run the agent. If interrupted, the SDK will print a URL.
-# A human can approve or kill the run from the browser.
+# Run the agent. If interrupted, the SDK prints only:
+#   "Interrupt <id> created; awaiting human decision (delivered out-of-band)."
+# A human approves or kills the run from the browser using the approver secret.
 ```
 
-When a detector trips, the SDK posts the interrupt to the backend, prints the validation URL in the terminal, and polls every 2 s until a human clicks Approve or Kill. Approve resumes the run as if nothing happened; Kill (or backend unreachable) raises `AgentBrakeInterrupt`.
+When a detector trips, the SDK posts the interrupt (authenticated with the SDK secret) and polls every 2 s until a human decides. **The SDK does not print the validation URL** — the agent shares its process, so the URL is kept out of its reach and should be delivered out-of-band (Slack, email, PagerDuty). For local dev, set `AGENTBRAKE_SHOW_URL=1` to print it to stderr.
+
+To approve, open the interrupt in a browser and enter the approver secret (or open `…/interrupts/<id>?token=<approver-secret>`). Approve resumes the run as if nothing happened; Kill, an invalid/absent approver secret, or an unreachable backend all stop the run with `AgentBrakeInterrupt`.
+
+### Security model (remote mode)
+
+The threat: an agent with an HTTP tool (`requests`, `fetch`, a browser tool) and enough autonomy to be dangerous is exactly the agent that might try to clear its own interruption. The SDK runs inside that agent's process, so anything the SDK knows, the agent can potentially reach.
+
+AgentBrake closes this with a privilege split:
+
+- **The SDK can create and poll, but never approve.** `/decide` requires the *approver* secret, which the SDK process never receives. The `AgentBrakeClient` holds only the SDK secret and exposes no `approve`/`decide` method.
+- **`/interrupts` and `/status` require the SDK secret**, so a stranger who finds the URL can't forge interrupt records or enumerate runs.
+- **The validation page never embeds the approver secret.** The agent knows the interrupt id and can `GET` the HTML page, so the secret is supplied by the human (typed, or read client-side from a `?token=` link) and is never rendered into the page server-side.
+- **Fail closed.** If the backend is unreachable or rejects the SDK, the run stops rather than continuing unguarded.
 
 ## Why AgentBrake vs LangSmith / Helicone / AgentOps
 

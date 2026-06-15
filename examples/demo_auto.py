@@ -37,6 +37,13 @@ sys.path.insert(0, str(PROJECT_ROOT))
 # subprocess (which inherits the env), regardless of where the demo is run.
 os.environ.setdefault("AGENTBRAKE_DB", str(PROJECT_ROOT / "agentbrake.db"))
 
+# Remote mode now requires two shared secrets. Pin both so they're identical in
+# this process (the SDK side) and the uvicorn subprocess (the server side),
+# which inherits the env. The SDK only ever uses the SDK secret; the approver
+# secret is used below to play the part of the human clicking "Approve".
+os.environ.setdefault("AGENTBRAKE_SDK_SECRET", "demo-sdk-secret")
+os.environ.setdefault("AGENTBRAKE_APPROVER_SECRET", "demo-approver-secret")
+
 import agentbrake  # noqa: E402
 from examples._shared import (  # noqa: E402
     AgentBrakeInterrupt,
@@ -285,9 +292,13 @@ def demo_4_remote() -> None:
     detail(f"{API_URL}/interrupts/{interrupt_id}")
     time.sleep(1.5)
 
-    # Simulate the human clicking "Approve" in the browser.
+    # Simulate the human clicking "Approve" in the browser. The browser holds
+    # the approver secret (the SDK never does), so we send it as the header the
+    # validation page would use.
     httpx.post(f"{API_URL}/interrupts/{interrupt_id}/decide",
-               json={"decision": "approve"}, timeout=10.0)
+               json={"decision": "approve"},
+               headers={"X-Approver-Secret": os.environ["AGENTBRAKE_APPROVER_SECRET"]},
+               timeout=10.0)
 
     worker.join(timeout=30)
     time.sleep(1.0)

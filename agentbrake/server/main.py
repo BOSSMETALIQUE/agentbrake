@@ -3,19 +3,20 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 from typing import Any, Dict, Optional
 
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 
 from agentbrake import __version__
 
-from . import store
+from . import security, store
 
 BASE_DIR = Path(__file__).resolve().parent
 TEMPLATES = Jinja2Templates(directory=str(BASE_DIR / "templates"))
@@ -24,6 +25,8 @@ TEMPLATES = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
     store.init_db()
+    # Secrets go to the server's OWN console only — never to the SDK/agent.
+    print(security.startup_banner(), file=sys.stderr, flush=True)
     yield
 
 
@@ -53,7 +56,11 @@ class StatusOut(BaseModel):
 
 # ----- Routes ------------------------------------------------------------
 
-@app.post("/interrupts", response_model=CreateInterruptOut)
+@app.post(
+    "/interrupts",
+    response_model=CreateInterruptOut,
+    dependencies=[Depends(security.require_sdk_secret)],
+)
 def create_interrupt(payload: CreateInterruptIn, request: Request) -> CreateInterruptOut:
     interrupt_id = store.create_interrupt(
         run_id=payload.run_id,
@@ -111,7 +118,11 @@ def view_interrupt(interrupt_id: str, request: Request) -> HTMLResponse:
     )
 
 
-@app.post("/interrupts/{interrupt_id}/decide", response_model=StatusOut)
+@app.post(
+    "/interrupts/{interrupt_id}/decide",
+    response_model=StatusOut,
+    dependencies=[Depends(security.require_approver_secret)],
+)
 def decide(interrupt_id: str, payload: DecideIn) -> StatusOut:
     if payload.decision not in {"approve", "kill"}:
         raise HTTPException(status_code=400, detail="decision must be 'approve' or 'kill'")
@@ -121,7 +132,11 @@ def decide(interrupt_id: str, payload: DecideIn) -> StatusOut:
     return StatusOut(status=new_status)
 
 
-@app.get("/interrupts/{interrupt_id}/status", response_model=StatusOut)
+@app.get(
+    "/interrupts/{interrupt_id}/status",
+    response_model=StatusOut,
+    dependencies=[Depends(security.require_sdk_secret)],
+)
 def get_status(interrupt_id: str) -> StatusOut:
     record = store.get_interrupt(interrupt_id)
     if record is None:

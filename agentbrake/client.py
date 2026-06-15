@@ -7,18 +7,37 @@ human review would be hostile. We use httpx.Client and short polling.
 
 from __future__ import annotations
 
+import os
 import time
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 import httpx
 
 
 class AgentBrakeClient:
-    """Thin HTTP client for the FastAPI backend."""
+    """Thin HTTP client for the FastAPI backend.
 
-    def __init__(self, api_url: str, timeout: float = 10.0):
+    SECURITY: this client only ever CREATES interrupts and POLLS status. It
+    holds the *SDK* secret (``AGENTBRAKE_SDK_SECRET``) and nothing more. It has
+    no approver secret and deliberately exposes no approve/decide method — the
+    guarded agent runs in this process, so giving it the means to approve its
+    own interruption would defeat the human-in-the-loop. Approving is a
+    server-side, human-only action gated by a separate approver secret.
+    """
+
+    def __init__(
+        self,
+        api_url: str,
+        timeout: float = 10.0,
+        sdk_secret: Optional[str] = None,
+    ):
         self.api_url = api_url.rstrip("/")
-        self._http = httpx.Client(base_url=self.api_url, timeout=timeout)
+        self.sdk_secret = (
+            sdk_secret if sdk_secret is not None
+            else os.environ.get("AGENTBRAKE_SDK_SECRET")
+        )
+        headers = {"X-SDK-Secret": self.sdk_secret} if self.sdk_secret else {}
+        self._http = httpx.Client(base_url=self.api_url, timeout=timeout, headers=headers)
 
     def submit_interrupt(
         self,

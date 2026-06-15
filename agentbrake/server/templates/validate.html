@@ -78,6 +78,17 @@
       background: var(--panel-2);
       font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
     }
+    input.secret {
+      width: 100%;
+      padding: 12px;
+      border-radius: 6px;
+      border: 1px solid var(--border);
+      background: var(--panel-2);
+      color: var(--text);
+      font-size: 14px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    }
+    input.secret:focus { outline: none; border-color: var(--escalation); }
     .actions { display: flex; gap: 12px; margin-top: 24px; }
     button {
       flex: 1;
@@ -151,6 +162,18 @@
       </div>
       {% endif %}
 
+      <div class="panel">
+        <h2>Approver secret</h2>
+        <div class="sub" style="margin: 0 0 10px;">
+          Required to act. Read it from the server console, or open the link
+          delivered to your approver channel (it carries the secret as
+          <code>?token=</code>).
+        </div>
+        <input class="secret" id="approverSecret" type="password"
+               placeholder="Paste approver secret" autocomplete="off"
+               spellcheck="false">
+      </div>
+
       <div class="actions">
         <button class="approve" id="approveBtn">Approve &amp; Continue</button>
         <button class="kill" id="killBtn">Kill the run</button>
@@ -163,16 +186,41 @@
         const result = document.getElementById('result');
         const approveBtn = document.getElementById('approveBtn');
         const killBtn = document.getElementById('killBtn');
+        const secretInput = document.getElementById('approverSecret');
+
+        // Convenience only: if a human opened a link carrying the approver
+        // secret as ?token=..., prefill the field. This is read entirely
+        // client-side — the SERVER never embeds the secret into this page,
+        // because an agent that knows the interrupt id could otherwise GET
+        // this page and scrape it.
+        const tokenFromUrl = new URLSearchParams(window.location.search).get('token');
+        if (tokenFromUrl) { secretInput.value = tokenFromUrl; }
 
         async function decide(decision) {
+          const secret = secretInput.value.trim();
+          if (!secret) {
+            result.className = 'result show killed';
+            result.textContent = 'Enter the approver secret first.';
+            return;
+          }
           approveBtn.disabled = true;
           killBtn.disabled = true;
           try {
             const r = await fetch(`/interrupts/${id}/decide`, {
               method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
+              headers: {
+                'Content-Type': 'application/json',
+                'X-Approver-Secret': secret
+              },
               body: JSON.stringify({ decision })
             });
+            if (r.status === 401 || r.status === 403) {
+              result.className = 'result show killed';
+              result.textContent = 'Rejected: invalid approver secret.';
+              approveBtn.disabled = false;
+              killBtn.disabled = false;
+              return;
+            }
             const data = await r.json();
             result.className = 'result show ' + data.status;
             result.textContent = data.status === 'approved'

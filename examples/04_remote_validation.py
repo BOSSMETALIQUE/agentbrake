@@ -2,13 +2,25 @@
 
 Same scenario as 03_privilege_escalation, but the SDK is configured for remote
 validation: when ESCALATION trips, the SDK posts the interrupt to the FastAPI
-backend, prints a URL in the terminal, and polls until a human clicks
-Approve / Kill in the browser.
+backend and polls until a human clicks Approve / Kill in the browser.
+
+Remote mode uses two shared secrets:
+  * AGENTBRAKE_SDK_SECRET   — the SDK presents this to create the interrupt.
+  * AGENTBRAKE_APPROVER_SECRET — only the human/server holds this; it's needed
+    to approve or kill. The SDK never sees it (that's the whole point).
+
+Set the SDK secret in this process's environment, and the SAME value plus the
+approver secret in the server's environment. The server prints the approver
+secret to its own console on startup (or set it explicitly).
 
 Prerequisites:
-  1. Start the backend in another terminal:
+  1. Start the backend in another terminal (it prints the approver secret):
+       set AGENTBRAKE_SDK_SECRET=dev-sdk-secret      # share with the SDK side
        uvicorn agentbrake.server.main:app --port 8000
-  2. ANTHROPIC_API_KEY in .env
+  2. In THIS terminal, share the SDK secret:
+       set AGENTBRAKE_SDK_SECRET=dev-sdk-secret
+  3. ANTHROPIC_API_KEY in .env
+  4. (optional) AGENTBRAKE_SHOW_URL=1 to print the validation URL locally.
 
 Run: python examples/04_remote_validation.py
 """
@@ -89,8 +101,10 @@ def main() -> None:
 
     print()
     print(f"Mode: REMOTE — interrupts will be sent to {API_URL} for human validation.")
-    print("When the detector trips, open the URL printed below in your browser")
-    print("and click Approve or Kill. The script will resume automatically.")
+    print("When the detector trips, open the interrupt in your browser and click")
+    print("Approve or Kill. In production the link is delivered out-of-band (Slack/")
+    print("email); for this local demo, set AGENTBRAKE_SHOW_URL=1 to print it here.")
+    print("Approving requires the approver secret from the server console.")
     print()
 
     try:

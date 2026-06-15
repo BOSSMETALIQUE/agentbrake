@@ -44,11 +44,15 @@ Prepare three terminal "tabs" (Windows Terminal supports this natively). In each
 - **Tab 2** — for `02_budget_runaway.py`. Pre-edit `examples/02_budget_runaway.py` so `BUDGET = 0.03` (fast trip). History: `python examples/02_budget_runaway.py`
 - **Tab 3** — for `03_privilege_escalation.py`. History: `python examples/03_privilege_escalation.py`
 
-In a fourth terminal (off-screen, never shown), have uvicorn already running:
+In a fourth terminal (off-screen, never shown), have uvicorn already running. Remote mode now needs two shared secrets; set both here, and export the SDK secret + `AGENTBRAKE_SHOW_URL=1` in the demo tab (Tab 3) so the ESCALATION banner still prints the clickable URL on screen:
 
 ```
+$env:AGENTBRAKE_SDK_SECRET = "demo-sdk-secret"
+$env:AGENTBRAKE_APPROVER_SECRET = "demo-approver-secret"
 .\.venv\Scripts\python.exe -m uvicorn agentbrake.server.main:app --port 8000 --log-level warning
 ```
+
+In the on-screen demo tab, before recording: `$env:AGENTBRAKE_SDK_SECRET = "demo-sdk-secret"` and `$env:AGENTBRAKE_SHOW_URL = "1"`. When approving in the browser, paste the approver secret (`demo-approver-secret`) into the validation page.
 
 Verify with `curl http://localhost:8000/docs` before hitting record.
 
