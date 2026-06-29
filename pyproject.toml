@@ -3,7 +3,7 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "agentbrake"
+name = "py-agentbrake"
 version = "0.1.0"
 description = "Circuit breaker SDK for LLM agents."
 requires-python = ">=3.9"
