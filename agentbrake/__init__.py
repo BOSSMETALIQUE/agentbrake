@@ -17,6 +17,7 @@ from .detectors import (
     cost_from_tokens,
 )
 from .flow import FlowPolicy, FlowRuleDetector, block_exfiltration
+from . import receipts
 from .types import AgentBrakeInterrupt, InterruptReason, RunState, ToolCall
 
 __version__ = "0.1.0"
@@ -39,6 +40,7 @@ __all__ = [
     "FlowPolicy",
     "FlowRuleDetector",
     "block_exfiltration",
+    "receipts",
     "__version__",
 ]
 
@@ -73,6 +75,7 @@ class Run:
         retry_window: int = 10,
         retry_progress_aware: bool = True,
         flow_policy: Optional[FlowPolicy] = None,
+        receipts_path: Optional[str] = None,
     ):
         if mode not in {"local", "remote"}:
             raise ValueError("mode must be 'local' or 'remote'")
@@ -85,6 +88,7 @@ class Run:
         self.retry_window = retry_window
         self.retry_progress_aware = retry_progress_aware
         self.flow_policy = flow_policy
+        self.receipts_path = receipts_path
         self.loop_detector = LoopDetector()
         self.retry_storm_detector = RetryStormDetector(
             max_calls_per_tool=retry_max_calls_per_tool,
@@ -96,9 +100,22 @@ class Run:
         self.flow_detector = (
             FlowRuleDetector(flow_policy) if flow_policy is not None else None
         )
+        self.flow_ledger: receipts.Ledger = (
+            receipts.JsonlLedger(receipts_path)
+            if receipts_path
+            else receipts.InMemoryLedger()
+        )
         self.state = RunState()
         self.client = AgentBrakeClient(api_url) if mode == "remote" else None
         self._token: Optional[Token] = None
+
+    def flow_receipts(self) -> List[dict]:
+        """All signed flow-block receipts minted during this run, in order."""
+        return self.flow_ledger.all()
+
+    def verify_receipts(self):
+        """Verify this run's receipt chain. Returns ``(ok, error_message)``."""
+        return receipts.verify_chain(self.flow_ledger.all())
 
     def __enter__(self) -> "Run":
         self._token = _current_run.set(self)
@@ -131,6 +148,7 @@ def init(
     retry_window: int = 10,
     retry_progress_aware: bool = True,
     flow_policy: Optional[FlowPolicy] = None,
+    receipts_path: Optional[str] = None,
 ) -> None:
     """Configure the process-wide default run. Resets all state on each call.
 
@@ -148,6 +166,7 @@ def init(
         retry_window=retry_window,
         retry_progress_aware=retry_progress_aware,
         flow_policy=flow_policy,
+        receipts_path=receipts_path,
     )
 
 
@@ -161,6 +180,7 @@ def run(
     retry_window: Optional[int] = None,
     retry_progress_aware: Optional[bool] = None,
     flow_policy: Optional[FlowPolicy] = None,
+    receipts_path: Optional[str] = None,
 ) -> Run:
     """Create an isolated Run; use it as a context manager.
 
@@ -207,6 +227,11 @@ def run(
             flow_policy
             if flow_policy is not None
             else (base.flow_policy if base else None)
+        ),
+        receipts_path=(
+            receipts_path
+            if receipts_path is not None
+            else (base.receipts_path if base else None)
         ),
     )
 
@@ -338,6 +363,18 @@ def guard() -> Callable[[Callable[..., Any]], Callable[..., Any]]:
                     # Human said go: execute as if the detector hadn't fired.
                     # Skip remaining detectors.
                     break
+
+                # The flow block is now final: mint a signed, hash-chained
+                # receipt — a verifiable proof that this attack was stopped,
+                # here, on this call — and attach it to the interrupt.
+                if reason is InterruptReason.FLOW and active.flow_detector is not None:
+                    row = receipts.mint_flow_receipt(
+                        active.flow_ledger,
+                        run_state=active.state,
+                        sink_call=call,
+                        flow=context["flow"],
+                    )
+                    context["receipt"] = receipts.receipt_summary(row)
 
                 active.state.status = "interrupted"
                 raise AgentBrakeInterrupt(reason, context=context)
