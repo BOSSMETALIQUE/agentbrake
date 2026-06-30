@@ -15,6 +15,20 @@ class InterruptReason(str, Enum):
     BUDGET = "budget"
     ESCALATION = "escalation"
     TIMEOUT = "timeout"
+    FLOW = "flow"
+
+
+class TaintMark(BaseModel):
+    """A taint label introduced into a run by a source tool.
+
+    Provenance is kept so a flow violation can name *which* call let the taint
+    in (e.g. "untrusted entered at call #2 via read_webpage"). This detail is
+    what makes a flow-block receipt auditable rather than just a boolean.
+    """
+
+    label: str
+    source_tool: str
+    call_index: int
 
 
 class ToolCall(BaseModel):
@@ -31,10 +45,15 @@ class RunState(BaseModel):
     total_cost_usd: float = 0.0
     calls: List[ToolCall] = Field(default_factory=list)
     status: str = "running"
+    taints: List[TaintMark] = Field(default_factory=list)
 
     def append(self, call: ToolCall) -> None:
         self.calls.append(call)
         self.total_cost_usd += call.cost_usd
+
+    def taint_labels(self) -> set:
+        """The set of taint labels currently active in this run."""
+        return {t.label for t in self.taints}
 
 
 class AgentBrakeInterrupt(Exception):

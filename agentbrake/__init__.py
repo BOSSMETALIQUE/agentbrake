@@ -16,6 +16,7 @@ from .detectors import (
     RetryStormDetector,
     cost_from_tokens,
 )
+from .flow import FlowPolicy, FlowRuleDetector, block_exfiltration
 from .types import AgentBrakeInterrupt, InterruptReason, RunState, ToolCall
 
 __version__ = "0.1.0"
@@ -35,6 +36,9 @@ __all__ = [
     "LoopDetector",
     "RetryStormDetector",
     "cost_from_tokens",
+    "FlowPolicy",
+    "FlowRuleDetector",
+    "block_exfiltration",
     "__version__",
 ]
 
@@ -68,6 +72,7 @@ class Run:
         retry_max_calls_per_tool: int = 5,
         retry_window: int = 10,
         retry_progress_aware: bool = True,
+        flow_policy: Optional[FlowPolicy] = None,
     ):
         if mode not in {"local", "remote"}:
             raise ValueError("mode must be 'local' or 'remote'")
@@ -79,6 +84,7 @@ class Run:
         self.retry_max_calls_per_tool = retry_max_calls_per_tool
         self.retry_window = retry_window
         self.retry_progress_aware = retry_progress_aware
+        self.flow_policy = flow_policy
         self.loop_detector = LoopDetector()
         self.retry_storm_detector = RetryStormDetector(
             max_calls_per_tool=retry_max_calls_per_tool,
@@ -87,6 +93,9 @@ class Run:
         )
         self.budget_detector = BudgetDetector(budget_usd)
         self.escalation_detector = EscalationDetector(self.allowed_tools)
+        self.flow_detector = (
+            FlowRuleDetector(flow_policy) if flow_policy is not None else None
+        )
         self.state = RunState()
         self.client = AgentBrakeClient(api_url) if mode == "remote" else None
         self._token: Optional[Token] = None
@@ -121,6 +130,7 @@ def init(
     retry_max_calls_per_tool: int = 5,
     retry_window: int = 10,
     retry_progress_aware: bool = True,
+    flow_policy: Optional[FlowPolicy] = None,
 ) -> None:
     """Configure the process-wide default run. Resets all state on each call.
 
@@ -137,6 +147,7 @@ def init(
         retry_max_calls_per_tool=retry_max_calls_per_tool,
         retry_window=retry_window,
         retry_progress_aware=retry_progress_aware,
+        flow_policy=flow_policy,
     )
 
 
@@ -149,6 +160,7 @@ def run(
     retry_max_calls_per_tool: Optional[int] = None,
     retry_window: Optional[int] = None,
     retry_progress_aware: Optional[bool] = None,
+    flow_policy: Optional[FlowPolicy] = None,
 ) -> Run:
     """Create an isolated Run; use it as a context manager.
 
@@ -190,6 +202,11 @@ def run(
             retry_progress_aware
             if retry_progress_aware is not None
             else (base.retry_progress_aware if base else True)
+        ),
+        flow_policy=(
+            flow_policy
+            if flow_policy is not None
+            else (base.flow_policy if base else None)
         ),
     )
 
@@ -294,17 +311,26 @@ def guard() -> Callable[[Callable[..., Any]], Callable[..., Any]]:
 
             call = ToolCall(name=name, args=args or {}, cost_usd=_FIXED_COST_PER_CALL_USD)
 
-            for detector in (
-                active.escalation_detector,
+            # Flow runs right after escalation: a forbidden *sequence* is a
+            # security event, checked before the cheaper loop/cost heuristics.
+            # The flow detector is only present when a flow_policy was set.
+            detectors = [active.escalation_detector]
+            if active.flow_detector is not None:
+                detectors.append(active.flow_detector)
+            detectors += [
                 active.loop_detector,
                 active.retry_storm_detector,
                 active.budget_detector,
-            ):
+            ]
+
+            for detector in detectors:
                 reason = detector.check(active.state, call)
                 if reason is None:
                     continue
 
                 context = _build_context(active, name)
+                if reason is InterruptReason.FLOW and active.flow_detector is not None:
+                    context["flow"] = active.flow_detector.explain(active.state, call)
 
                 if active.mode == "remote" and _handle_remote_interrupt(
                     active, reason, context
@@ -327,6 +353,10 @@ def guard() -> Callable[[Callable[..., Any]], Callable[..., Any]]:
                 call.error = repr(e)
                 raise
             call.outcome = "ok"
+            # A source tool only taints the run once it has actually run and
+            # returned — a read that raised ingested nothing.
+            if active.flow_detector is not None:
+                active.flow_detector.apply_taint(active.state, call)
             return result
 
         return wrapper
