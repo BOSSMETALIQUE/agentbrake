@@ -9,7 +9,13 @@ from contextvars import ContextVar, Token
 from typing import Any, Callable, List, Optional
 
 from .client import AgentBrakeClient
-from .detectors import BudgetDetector, EscalationDetector, LoopDetector
+from .detectors import (
+    BudgetDetector,
+    EscalationDetector,
+    LoopDetector,
+    RetryStormDetector,
+    cost_from_tokens,
+)
 from .types import AgentBrakeInterrupt, InterruptReason, RunState, ToolCall
 
 __version__ = "0.1.0"
@@ -24,6 +30,11 @@ __all__ = [
     "InterruptReason",
     "RunState",
     "ToolCall",
+    "BudgetDetector",
+    "EscalationDetector",
+    "LoopDetector",
+    "RetryStormDetector",
+    "cost_from_tokens",
     "__version__",
 ]
 
@@ -54,6 +65,9 @@ class Run:
         budget_usd: float = 0.0,
         api_url: str = "http://localhost:8000",
         mode: str = "local",
+        retry_max_calls_per_tool: int = 5,
+        retry_window: int = 10,
+        retry_progress_aware: bool = True,
     ):
         if mode not in {"local", "remote"}:
             raise ValueError("mode must be 'local' or 'remote'")
@@ -62,7 +76,15 @@ class Run:
         self.budget_usd = budget_usd
         self.api_url = api_url
         self.mode = mode
+        self.retry_max_calls_per_tool = retry_max_calls_per_tool
+        self.retry_window = retry_window
+        self.retry_progress_aware = retry_progress_aware
         self.loop_detector = LoopDetector()
+        self.retry_storm_detector = RetryStormDetector(
+            max_calls_per_tool=retry_max_calls_per_tool,
+            window=retry_window,
+            progress_aware=retry_progress_aware,
+        )
         self.budget_detector = BudgetDetector(budget_usd)
         self.escalation_detector = EscalationDetector(self.allowed_tools)
         self.state = RunState()
@@ -96,6 +118,9 @@ def init(
     budget_usd: float = 0.0,
     api_url: str = "http://localhost:8000",
     mode: str = "local",
+    retry_max_calls_per_tool: int = 5,
+    retry_window: int = 10,
+    retry_progress_aware: bool = True,
 ) -> None:
     """Configure the process-wide default run. Resets all state on each call.
 
@@ -109,6 +134,9 @@ def init(
         budget_usd=budget_usd,
         api_url=api_url,
         mode=mode,
+        retry_max_calls_per_tool=retry_max_calls_per_tool,
+        retry_window=retry_window,
+        retry_progress_aware=retry_progress_aware,
     )
 
 
@@ -118,6 +146,9 @@ def run(
     budget_usd: Optional[float] = None,
     api_url: Optional[str] = None,
     mode: Optional[str] = None,
+    retry_max_calls_per_tool: Optional[int] = None,
+    retry_window: Optional[int] = None,
+    retry_progress_aware: Optional[bool] = None,
 ) -> Run:
     """Create an isolated Run; use it as a context manager.
 
@@ -145,6 +176,21 @@ def run(
             else (base.api_url if base else "http://localhost:8000")
         ),
         mode=mode if mode is not None else (base.mode if base else "local"),
+        retry_max_calls_per_tool=(
+            retry_max_calls_per_tool
+            if retry_max_calls_per_tool is not None
+            else (base.retry_max_calls_per_tool if base else 5)
+        ),
+        retry_window=(
+            retry_window
+            if retry_window is not None
+            else (base.retry_window if base else 10)
+        ),
+        retry_progress_aware=(
+            retry_progress_aware
+            if retry_progress_aware is not None
+            else (base.retry_progress_aware if base else True)
+        ),
     )
 
 
@@ -251,6 +297,7 @@ def guard() -> Callable[[Callable[..., Any]], Callable[..., Any]]:
             for detector in (
                 active.escalation_detector,
                 active.loop_detector,
+                active.retry_storm_detector,
                 active.budget_detector,
             ):
                 reason = detector.check(active.state, call)
