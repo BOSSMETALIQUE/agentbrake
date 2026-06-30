@@ -18,6 +18,73 @@ def _structural_hash(call: ToolCall) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
+def _is_number(value) -> bool:
+    """True for int/float, but NOT bool (which is technically an int in Python)."""
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def _has_monotonic_numeric_arg(calls: List[ToolCall]) -> bool:
+    """Detect a numeric argument that strictly climbs or drops across the calls.
+
+    This is the classic pagination signature: page=1, 2, 3 ... or offset=0, 10,
+    20 ... A key only qualifies if it is present AND numeric in *every* call,
+    and its values are strictly increasing or strictly decreasing. Needs at
+    least 3 points so a single step isn't mistaken for a trend.
+    """
+    if len(calls) < 3:
+        return False
+    # keys that are numeric in the very first call are candidates
+    candidate_keys = [k for k, v in calls[0].args.items() if _is_number(v)]
+    for key in candidate_keys:
+        series = []
+        ok = True
+        for c in calls:
+            v = c.args.get(key, None)
+            if not _is_number(v):
+                ok = False
+                break
+            series.append(v)
+        if not ok or len(series) < 3:
+            continue
+        strictly_up = all(b > a for a, b in zip(series, series[1:]))
+        strictly_down = all(b < a for a, b in zip(series, series[1:]))
+        if strictly_up or strictly_down:
+            return True
+    return False
+
+
+def _looks_like_progress(prior_same_tool: List[ToolCall], new_call: ToolCall) -> bool:
+    """Decide whether a burst of same-tool calls is healthy work, not a stuck loop.
+
+    Two independent signals count as progress:
+
+    1. A numeric argument that climbs/drops monotonically (page=1,2,3...).
+       Works regardless of whether outcomes were recorded.
+
+    2. The calls are nearly all distinct AND the ones that finished actually
+       succeeded. This catches cursor-based pagination / legitimate iteration
+       where there is no simple numeric key, but only when there is real
+       evidence of success (outcome == "ok"). Pending/unknown outcomes do NOT
+       count as success, so an untracked burst still trips the brake.
+    """
+    series = prior_same_tool + [new_call]
+
+    # Signal 1: numeric pagination.
+    if _has_monotonic_numeric_arg(series):
+        return True
+
+    # Signal 2: varied + actually succeeding.
+    if len(prior_same_tool) >= 2:
+        hashes = {_structural_hash(c) for c in series}
+        distinct_ratio = len(hashes) / len(series)
+        errors = sum(1 for c in prior_same_tool if c.outcome == "error")
+        oks = sum(1 for c in prior_same_tool if c.outcome == "ok")
+        if distinct_ratio >= 0.8 and errors == 0 and oks >= 2:
+            return True
+
+    return False
+
+
 class LoopDetector:
     """Flags when N consecutive calls share the same structural hash.
 
@@ -42,42 +109,63 @@ class LoopDetector:
 
 
 class RetryStormDetector:
-    """Flags when the same tool is called too many times in a recent window.
+    """Flags when the same tool is hammered too many times in a recent window.
 
     Unlike LoopDetector, this does NOT require the arguments to match, and does
-    NOT require the calls to be consecutive. It catches two common failure modes
-    that exact-hash loop detection misses:
+    NOT require the calls to be consecutive. It catches failure modes that exact
+    -hash loop detection misses:
 
-      * retry storms   -> search("A"), search("B"), search("C"), ...
+      * retry storms      -> search("A"), search("B"), search("C"), ...
       * alternating loops -> search, read, search, read, search, ...
 
     It counts how many times `new_call.name` appears among the last `window`
     calls (including the new one). If that count reaches `max_calls_per_tool`,
-    the run is flagged as a loop.
+    the run is flagged as a loop -- UNLESS the burst looks like real progress.
+
+    Progress awareness (on by default) keeps legitimate pagination from tripping
+    the brake: an agent walking through pages (page=1, 2, 3 ...) or iterating a
+    cursor with successful calls is doing real work, not spinning. When
+    `progress_aware` is True, such bursts are allowed through; the budget cap and
+    the allow-list remain your hard stops. Set `progress_aware=False` to fall
+    back to pure count-based behavior.
 
     Args:
         max_calls_per_tool: how many calls to the same tool are allowed inside
             the window before the brake trips. Must be >= 2.
         window: how many recent calls to look back over. Must be
-            >= max_calls_per_tool. A larger window catches slower loops;
-            a smaller one only catches tight bursts.
+            >= max_calls_per_tool. A larger window catches slower loops; a
+            smaller one only catches tight bursts.
+        progress_aware: when True (default), bursts that show monotonic numeric
+            progress, or that are varied and succeeding, are not flagged.
     """
 
-    def __init__(self, max_calls_per_tool: int = 5, window: int = 10):
+    def __init__(
+        self,
+        max_calls_per_tool: int = 5,
+        window: int = 10,
+        progress_aware: bool = True,
+    ):
         if max_calls_per_tool < 2:
             raise ValueError("max_calls_per_tool must be >= 2")
         if window < max_calls_per_tool:
             raise ValueError("window must be >= max_calls_per_tool")
         self.max_calls_per_tool = max_calls_per_tool
         self.window = window
+        self.progress_aware = progress_aware
 
     def check(self, run_state: RunState, new_call: ToolCall) -> Optional[InterruptReason]:
         recent = run_state.calls[-(self.window - 1):]
+        prior_same_tool = [c for c in recent if c.name == new_call.name]
         # +1 for the new call we are about to make
-        same_tool = sum(1 for c in recent if c.name == new_call.name) + 1
-        if same_tool >= self.max_calls_per_tool:
-            return InterruptReason.LOOP
-        return None
+        same_tool_count = len(prior_same_tool) + 1
+
+        if same_tool_count < self.max_calls_per_tool:
+            return None
+
+        if self.progress_aware and _looks_like_progress(prior_same_tool, new_call):
+            return None
+
+        return InterruptReason.LOOP
 
 
 class BudgetDetector:
@@ -113,7 +201,7 @@ class EscalationDetector:
 # BudgetDetector already understands.
 #
 # Prices are USD per 1,000,000 tokens (input, output). Update these as provider
-# pricing changes — they are intentionally easy to edit. Unknown models fall
+# pricing changes -- they are intentionally easy to edit. Unknown models fall
 # back to DEFAULT_PRICING so a typo never silently costs $0.
 # ---------------------------------------------------------------------------
 
