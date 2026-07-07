@@ -201,6 +201,122 @@ def test_expected_head_detects_rewritten_history():
     assert report["ok"] is False
 
 
+# --- Merkle root in the signed head ---------------------------------------------
+
+def test_head_carries_merkle_root():
+    from agentbrake import merkle
+
+    rows = _mint_chain(5)
+    bundle = export_mod.build_export(rows, signer=TEST_SIGNER)
+    statement = bundle["head"]["statement"]
+    assert statement["tree_size"] == 5
+    assert statement["tree_root"] == merkle.root_for_entries(bundle["entries"])
+
+
+def test_swapped_root_fails_merkle_check():
+    bundle = export_mod.build_export(_mint_chain(3), signer=TEST_SIGNER)
+    bundle["head"]["statement"]["tree_root"] = "ab" * 32
+    report = export_mod.verify_export(bundle, pinned_public_keys=PUBLIC_KEYS)
+    assert report["ok"] is False
+    assert _passing(report, "merkle_root") is False
+    assert _passing(report, "head_signature") is False  # statement was altered
+
+
+# --- consistency between two exports ----------------------------------------------
+
+def test_consistency_accepts_growing_chain():
+    rows = _mint_chain(5)
+    old = export_mod.build_export(rows[:3], signer=TEST_SIGNER)
+    new = export_mod.build_export(rows, signer=TEST_SIGNER)
+    report = export_mod.verify_export(
+        new, pinned_public_keys=PUBLIC_KEYS, consistent_with=old
+    )
+    assert report["ok"], report["checks"]
+    assert _passing(report, "consistency") is True
+
+
+def test_consistency_detects_rewritten_prefix():
+    rows = _mint_chain(3)
+    old = export_mod.build_export(rows, signer=TEST_SIGNER)
+    # A "new" chain that is NOT an extension of the old one.
+    other_rows = _mint_chain(4)
+    new = export_mod.build_export(other_rows, signer=TEST_SIGNER)
+    report = export_mod.verify_export(
+        new, pinned_public_keys=PUBLIC_KEYS, consistent_with=old
+    )
+    assert report["ok"] is False
+    assert _passing(report, "consistency") is False
+
+
+def test_consistency_detects_shrunken_chain():
+    rows = _mint_chain(4)
+    old = export_mod.build_export(rows, signer=TEST_SIGNER)
+    new = export_mod.build_export(rows[:2], signer=TEST_SIGNER)
+    report = export_mod.verify_export(
+        new, pinned_public_keys=PUBLIC_KEYS, consistent_with=old
+    )
+    assert report["ok"] is False
+
+
+def test_consistency_requires_signed_old_head():
+    rows = _mint_chain(3)
+    old = export_mod.build_export(rows[:2], signer=None, extra_public_keys=PUBLIC_KEYS)
+    new = export_mod.build_export(rows, signer=TEST_SIGNER)
+    report = export_mod.verify_export(
+        new, pinned_public_keys=PUBLIC_KEYS, consistent_with=old
+    )
+    assert _passing(report, "old_head_signature") is False
+
+
+# --- single-receipt proofs (selective disclosure) ----------------------------------
+
+def test_receipt_proof_verifies_without_the_log():
+    rows = _mint_chain(5)
+    proof = export_mod.build_receipt_proof(rows, 3, signer=TEST_SIGNER)
+    proof = json.loads(json.dumps(proof))  # what the recipient actually holds
+    assert "entries" not in proof  # the rest of the log is NOT disclosed
+    report = export_mod.verify_receipt_proof(proof, pinned_public_keys=PUBLIC_KEYS)
+    assert report["ok"], report["checks"]
+    assert report["third_party_verifiable"] is True
+
+
+def test_receipt_proof_position_is_bound():
+    """Moving the proof to another index must fail — position is proven."""
+    rows = _mint_chain(5)
+    proof = export_mod.build_receipt_proof(rows, 3, signer=TEST_SIGNER)
+    proof["leaf_index"] = 3  # claim seq-3 receipt sits at position 3 (it's at 2)
+    report = export_mod.verify_receipt_proof(proof, pinned_public_keys=PUBLIC_KEYS)
+    assert report["ok"] is False
+
+
+def test_receipt_proof_tampered_entry_fails():
+    rows = _mint_chain(5)
+    proof = export_mod.build_receipt_proof(rows, 2, signer=TEST_SIGNER)
+    proof["entry"]["attestation_json"] = proof["entry"]["attestation_json"].replace(
+        '"decision":"block"', '"decision":"allow"'
+    )
+    report = export_mod.verify_receipt_proof(proof, pinned_public_keys=PUBLIC_KEYS)
+    assert report["ok"] is False
+
+
+def test_receipt_proof_from_foreign_log_fails():
+    """A receipt + proof from one log cannot ride another log's signed head."""
+    rows_a, rows_b = _mint_chain(4), _mint_chain(4)
+    proof_a = export_mod.build_receipt_proof(rows_a, 2, signer=TEST_SIGNER)
+    proof_b = export_mod.build_receipt_proof(rows_b, 2, signer=TEST_SIGNER)
+    frankenstein = dict(proof_a, head=proof_b["head"])
+    report = export_mod.verify_receipt_proof(
+        frankenstein, pinned_public_keys=PUBLIC_KEYS
+    )
+    assert report["ok"] is False
+
+
+def test_receipt_proof_bad_seq_raises():
+    rows = _mint_chain(2)
+    with pytest.raises(ValueError):
+        export_mod.build_receipt_proof(rows, 9, signer=TEST_SIGNER)
+
+
 # --- CLI end-to-end -------------------------------------------------------------
 
 def _write_jsonl(rows: list, path: Path) -> None:
@@ -265,6 +381,59 @@ def test_cli_verify_expect_head_detects_rollback(tmp_path, capsys):
     code = cli.main(["verify", str(path), "--expect-head", f"3:{full_head}"])
     assert code == 1
     assert "truncated or rolled back" in capsys.readouterr().out
+
+
+def test_cli_verify_consistent_with(tmp_path, capsys):
+    rows = _mint_chain(4)
+    old_path, new_path = tmp_path / "old.json", tmp_path / "new.json"
+    old_path.write_text(
+        json.dumps(export_mod.build_export(rows[:2], signer=TEST_SIGNER)), encoding="utf-8"
+    )
+    new_path.write_text(
+        json.dumps(export_mod.build_export(rows, signer=TEST_SIGNER)), encoding="utf-8"
+    )
+    code = cli.main(
+        [
+            "verify", str(new_path),
+            "--public-key", TEST_SIGNER.public_key_hex(),
+            "--consistent-with", str(old_path),
+        ]
+    )
+    assert code == 0
+    assert "exact prefix" in capsys.readouterr().out
+
+
+def test_cli_prove_and_verify_receipt(tmp_path, monkeypatch, capsys):
+    jsonl = tmp_path / "receipts.jsonl"
+    _write_jsonl(_mint_chain(5), jsonl)
+    proof_path = tmp_path / "proof.json"
+
+    monkeypatch.setenv(signing.SIGNING_SEED_ENV, (b"\x04" * 32).hex())
+    monkeypatch.delenv(signing.SIGNING_KEY_FILE_ENV, raising=False)
+    assert cli.main(
+        ["prove", "--receipts", str(jsonl), "--seq", "3", "-o", str(proof_path)]
+    ) == 0
+
+    code = cli.main(
+        ["verify-receipt", str(proof_path), "--public-key", TEST_SIGNER.public_key_hex()]
+    )
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "VERIFIED" in out
+    assert "Merkle inclusion" in out
+
+    # Tamper the disclosed receipt: verification must fail.
+    proof = json.loads(proof_path.read_text(encoding="utf-8"))
+    proof["entry"]["signature"] = "00" * 64
+    proof_path.write_text(json.dumps(proof), encoding="utf-8")
+    assert cli.main(["verify-receipt", str(proof_path)]) == 1
+
+
+def test_cli_prove_rejects_unknown_seq(tmp_path, monkeypatch):
+    jsonl = tmp_path / "receipts.jsonl"
+    _write_jsonl(_mint_chain(2), jsonl)
+    monkeypatch.setenv(signing.SIGNING_SEED_ENV, (b"\x04" * 32).hex())
+    assert cli.main(["prove", "--receipts", str(jsonl), "--seq", "7"]) == 2
 
 
 def test_cli_keygen(tmp_path, capsys):

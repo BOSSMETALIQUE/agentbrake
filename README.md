@@ -191,6 +191,7 @@ The SDK is the only piece you import. In local mode (default), it raises on dete
 - [x] FastAPI backend with dynamic validation UI
 - [x] Signed, hash-chained attestations (verifiable receipts) — human decisions **and** flow blocks
 - [x] Third-party verification: Ed25519 receipts, export bundles, standalone `agentbrake verify` CLI
+- [x] RFC 6962 Merkle log: signed tree root, cross-export consistency, single-receipt inclusion proofs
 - [ ] Slack / webhook integration for human-in-the-loop
 - [ ] PyPI release
 
@@ -303,7 +304,18 @@ The auditor verifies **offline** — no server access, no private key, no trust 
 agentbrake verify receipts_export.json --public-key <hex-obtained-out-of-band>
 ```
 
-The verifier checks that (a) every signature is valid under the public key, (b) the hash chain is intact — nothing altered, inserted, deleted or reordered, (c) the signed head matches the entries exactly, so the export wasn't quietly truncated, and (d) with `--expect-head LENGTH:HASH` from a previous export, that history didn't shrink or change underneath — rollback detection across audits. Exit code 0/1 makes it CI-friendly; `--json` gives a machine-readable report.
+The verifier checks that (a) every signature is valid under the public key, (b) the hash chain is intact — nothing altered, inserted, deleted or reordered, (c) the signed head matches the entries exactly — including an **RFC 6962 Merkle root** over all entries — so the export wasn't quietly truncated, (d) with `--expect-head LENGTH:HASH` from a previous export, that history didn't shrink or change underneath, and (e) with `--consistent-with older_bundle.json`, that the older export is an *exact prefix* of this one — rewritten history between two audits is caught by recomputing the older signed root. Exit code 0/1 makes it CI-friendly; `--json` gives a machine-readable report.
+
+### Selective disclosure: prove one receipt, reveal nothing else
+
+The head is also the root of a Certificate-Transparency-style Merkle tree (RFC 6962 hashing, so a verifier can be re-implemented from the RFC alone). That makes single-receipt proofs possible: hand a customer or regulator **one receipt plus an O(log n) inclusion proof** against the signed root — they can verify it belongs to your log at its exact position without seeing any other receipt.
+
+```bash
+agentbrake prove --db agentbrake.db --seq 42 -o receipt_proof.json
+agentbrake verify-receipt receipt_proof.json --public-key <hex>
+```
+
+To be precise about what the tree buys: it does **not** change the trust model (the key holder could still regenerate a parallel tree — anchoring heads externally remains the answer). What it adds is disclosure control and efficiency: membership proofs that don't require shipping, or revealing, the rest of the log.
 
 ### What a receipt proves — and what it doesn't
 

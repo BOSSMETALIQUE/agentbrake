@@ -42,12 +42,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from agentbrake import signing
+from agentbrake import merkle, signing
 from agentbrake.server import attest
 
 EXPORT_FORMAT = "agentbrake-receipts-export"
 EXPORT_FORMAT_VERSION = "1"
 HEAD_STATEMENT_TYPE = "agentbrake.chain-head"
+RECEIPT_PROOF_FORMAT = "agentbrake-receipt-proof"
+RECEIPT_PROOF_FORMAT_VERSION = "1"
 
 # The head of an empty chain: nothing to point at yet.
 EMPTY_HEAD_HASH = attest.GENESIS_HASH
@@ -81,18 +83,24 @@ def build_head_statement(
     chain_id: Optional[str],
     length: int,
     head_hash: str,
+    tree_root: str,
     key_id: str,
     alg: str,
     exported_at: Optional[str] = None,
 ) -> Dict[str, Any]:
     """The exporter's commitment: this chain has ``length`` entries ending at
-    ``head_hash``. Signed separately from the entries (own domain), so it can
-    be stored, forwarded, or pinned on its own."""
+    ``head_hash``, with RFC 6962 Merkle root ``tree_root``. Signed separately
+    from the entries (own domain), so it can be stored, forwarded, or pinned on
+    its own. ``tree_size`` always equals ``length``; both are kept because the
+    head_hash binds the *chain* form and the tree_root binds the *tree* form
+    (which is what single-receipt inclusion proofs verify against)."""
     return {
         "type": HEAD_STATEMENT_TYPE,
         "chain_id": chain_id,
         "length": length,
         "head_hash": head_hash,
+        "tree_size": length,
+        "tree_root": tree_root,
         "key_id": key_id,
         "alg": alg,
         "exported_at": exported_at or datetime.now(timezone.utc).isoformat(),
@@ -148,6 +156,7 @@ def build_export(
     entries = [_normalize_entry(r) for r in rows]
     chain_id = _chain_id_of(entries)
     head_hash = entries[-1]["entry_hash"] if entries else EMPTY_HEAD_HASH
+    tree_root = merkle.root_for_entries(entries)
 
     public_keys: Dict[str, str] = dict(extra_public_keys or {})
     signing_block: Optional[Dict[str, Any]] = None
@@ -166,6 +175,7 @@ def build_export(
             chain_id=chain_id,
             length=len(entries),
             head_hash=head_hash,
+            tree_root=tree_root,
             key_id=signer.key_id,
             alg=signer.alg,
         )
@@ -175,6 +185,7 @@ def build_export(
             chain_id=chain_id,
             length=len(entries),
             head_hash=head_hash,
+            tree_root=tree_root,
             key_id="",
             alg="none",
         )
@@ -225,6 +236,7 @@ def verify_export(
     pinned_public_keys: Optional[Dict[str, str]] = None,
     hmac_key: Optional[bytes] = None,
     expected_head: Optional[Tuple[int, str]] = None,
+    consistent_with: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Verify a bundle offline. Returns a structured report; trusts nothing
     from the bundle beyond what the checks themselves establish.
@@ -236,6 +248,10 @@ def verify_export(
       flags the result as NOT third-party verifiable.
     * ``expected_head`` — ``(length, head_hash)`` from a previously pinned
       export; detects rollback/truncation between two exports.
+    * ``consistent_with`` — an OLDER bundle of the same chain. The Merkle root
+      over this bundle's first ``old.tree_size`` entries must reproduce the
+      old bundle's signed root: the old export must be an exact prefix of this
+      one, or history was rewritten between the two audits.
     """
     checks: List[Check] = []
 
@@ -277,6 +293,15 @@ def verify_export(
         f"entries show length={len(entries)} hash={actual_head_hash[:16]}..",
     )
 
+    actual_root = merkle.root_for_entries(entries)
+    check(
+        "merkle_root",
+        statement.get("tree_size") == len(entries)
+        and statement.get("tree_root") == actual_root,
+        f"RFC 6962 root over {len(entries)} entries is {actual_root[:16]}..; "
+        f"head commits to {str(statement.get('tree_root'))[:16]}..",
+    )
+
     if head_signature is None:
         check(
             "head_signature",
@@ -303,6 +328,44 @@ def verify_export(
         statement.get("chain_id") == chain_id and bundle.get("chain_id") == chain_id,
         f"chain_id={chain_id}",
     )
+
+    if consistent_with is not None:
+        old_statement = (consistent_with.get("head") or {}).get("statement") or {}
+        old_signature = (consistent_with.get("head") or {}).get("signature")
+        old_size = old_statement.get("tree_size")
+        old_root = old_statement.get("tree_root")
+        old_head_ok = old_signature is not None and verify_head_statement(
+            old_statement,
+            old_signature,
+            public_key_hex=public_keys.get(old_statement.get("key_id")),
+            hmac_key=hmac_key,
+        )
+        check(
+            "old_head_signature",
+            old_head_ok,
+            "older bundle's signed head verifies"
+            if old_head_ok
+            else "older bundle's head is unsigned or does not verify — its root "
+            "cannot anchor a consistency claim",
+        )
+        if not isinstance(old_size, int) or old_size > len(entries):
+            check(
+                "consistency",
+                False,
+                f"older export commits to {old_size} entries but this one has "
+                f"{len(entries)} — receipts were truncated or rolled back",
+            )
+        else:
+            prefix_root = merkle.root_for_entries(entries[:old_size])
+            check(
+                "consistency",
+                prefix_root == old_root,
+                f"first {old_size} entries reproduce the older signed root — the "
+                "old export is an exact prefix of this one"
+                if prefix_root == old_root
+                else f"root over the first {old_size} entries does not match the "
+                "older signed root — history was rewritten between exports",
+            )
 
     if expected_head is not None:
         exp_len, exp_hash = expected_head
@@ -338,6 +401,163 @@ def verify_export(
         "entry_count": len(entries),
         "chain_id": chain_id,
         "algorithms": sorted(algs),
+        "public_keys": public_keys,
+        "keys_pinned": keys_pinned,
+        "third_party_verifiable": third_party,
+        "head": {"length": statement.get("length"), "head_hash": statement.get("head_hash")},
+        "checks": [c.as_dict() for c in checks],
+    }
+
+
+# ----- single-receipt proofs (selective disclosure) --------------------------
+
+def build_receipt_proof(
+    rows: List[Dict[str, Any]],
+    seq: int,
+    *,
+    signer: Optional[signing.Signer] = None,
+    extra_public_keys: Optional[Dict[str, str]] = None,
+) -> Dict[str, Any]:
+    """Package ONE receipt with an inclusion proof against the signed head.
+
+    The holder of this artifact can verify that the receipt is authentic and
+    sits at position ``seq`` in a log of the committed size — without ever
+    seeing any other receipt. This is what you hand to a party who is entitled
+    to one enforcement proof but not to the whole log.
+    """
+    entries = [_normalize_entry(r) for r in rows]
+    index = seq - 1
+    if not 0 <= index < len(entries):
+        raise ValueError(f"seq {seq} not in chain of length {len(entries)}")
+    if entries[index]["seq"] != seq:
+        raise ValueError(f"chain is not seq-ordered at position {index}")
+
+    bundle = build_export(rows, signer=signer, extra_public_keys=extra_public_keys)
+    return {
+        "format": RECEIPT_PROOF_FORMAT,
+        "format_version": RECEIPT_PROOF_FORMAT_VERSION,
+        "entry": entries[index],
+        "leaf_index": index,
+        "inclusion_proof": merkle.proof_for_entry(index, entries),
+        "public_keys": bundle["public_keys"],
+        "head": bundle["head"],
+    }
+
+
+def verify_receipt_proof(
+    proof: Dict[str, Any],
+    *,
+    pinned_public_keys: Optional[Dict[str, str]] = None,
+    hmac_key: Optional[bytes] = None,
+) -> Dict[str, Any]:
+    """Verify a single-receipt proof offline. Same report shape as
+    :func:`verify_export`, scoped to one entry."""
+    checks: List[Check] = []
+
+    def check(name: str, ok: bool, detail: str) -> bool:
+        checks.append(Check(name, ok, detail))
+        return ok
+
+    entry = proof.get("entry") or {}
+    embedded_keys: Dict[str, str] = dict(proof.get("public_keys") or {})
+    public_keys = pinned_public_keys if pinned_public_keys is not None else embedded_keys
+    keys_pinned = pinned_public_keys is not None
+
+    check(
+        "format",
+        proof.get("format") == RECEIPT_PROOF_FORMAT
+        and proof.get("format_version") == RECEIPT_PROOF_FORMAT_VERSION,
+        f"expected {RECEIPT_PROOF_FORMAT} v{RECEIPT_PROOF_FORMAT_VERSION}",
+    )
+
+    try:
+        attestation = json.loads(entry.get("attestation_json") or "")
+    except json.JSONDecodeError:
+        attestation = None
+    if attestation is None:
+        check("entry_signature", False, "entry attestation is not parseable JSON")
+    else:
+        sig_ok, sig_err = attest.verify_record_signature(
+            attestation,
+            entry["attestation_json"],
+            entry["signature"],
+            public_keys=public_keys,
+            hmac_key=hmac_key,
+        )
+        check(
+            "entry_signature",
+            sig_ok,
+            sig_err or "receipt signature valid under trusted key",
+        )
+        recomputed = attest.entry_hash(entry["attestation_json"], entry["signature"])
+        check(
+            "entry_hash",
+            recomputed == entry.get("entry_hash"),
+            "entry_hash matches the signed bytes",
+        )
+
+    statement = (proof.get("head") or {}).get("statement") or {}
+    head_signature = (proof.get("head") or {}).get("signature")
+    index = proof.get("leaf_index")
+    tree_size = statement.get("tree_size")
+
+    included = isinstance(index, int) and isinstance(tree_size, int) and (
+        merkle.verify_entry_inclusion(
+            entry,
+            index,
+            tree_size,
+            proof.get("inclusion_proof") or [],
+            str(statement.get("tree_root")),
+        )
+    )
+    check(
+        "inclusion",
+        bool(included),
+        f"receipt proven at position {index} of a log of {tree_size} "
+        "under the signed root"
+        if included
+        else "inclusion proof does not reach the signed root",
+    )
+
+    check(
+        "position_matches_seq",
+        attestation is not None
+        and isinstance(index, int)
+        and attestation.get("seq") == index + 1
+        and entry.get("seq") == index + 1,
+        "the signed seq equals the proven tree position",
+    )
+
+    if head_signature is None:
+        check("head_signature", False, "head statement is UNSIGNED")
+    else:
+        head_key = public_keys.get(statement.get("key_id"))
+        head_ok = verify_head_statement(
+            statement, head_signature, public_key_hex=head_key, hmac_key=hmac_key
+        )
+        check(
+            "head_signature",
+            head_ok,
+            "signed head verifies under key "
+            f"{statement.get('key_id')}" if head_ok
+            else f"head signature invalid or key {statement.get('key_id')} not trusted",
+        )
+
+    if attestation is not None:
+        check(
+            "chain_id_consistent",
+            attestation.get("chain_id") == statement.get("chain_id"),
+            f"chain_id={statement.get('chain_id')}",
+        )
+
+    alg = (attestation or {}).get("alg")
+    third_party = alg == signing.ALG_ED25519 and head_signature is not None
+
+    return {
+        "ok": all(c.ok for c in checks),
+        "entry_count": 1,
+        "chain_id": statement.get("chain_id"),
+        "algorithms": [alg or "hmac-sha256(v1)"],
         "public_keys": public_keys,
         "keys_pinned": keys_pinned,
         "third_party_verifiable": third_party,

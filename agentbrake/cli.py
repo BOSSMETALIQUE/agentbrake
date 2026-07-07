@@ -104,16 +104,28 @@ def _parse_expected_head(value: str) -> Tuple[int, str]:
 def _trust_model_lines(report: dict) -> list:
     """Say exactly what a passing verification proves — and what it doesn't."""
     key_ids = ", ".join(report["public_keys"]) or "(none)"
+    committed = report.get("head", {}).get("length", report["entry_count"])
+    single_receipt = report["entry_count"] == 1 and committed != 1
     lines = ["What this verification PROVES:"]
     if report["third_party_verifiable"]:
         lines += [
             f"  + Every receipt was signed by the holder of private key(s) [{key_ids}]",
             "    and is byte-for-byte unmodified. No one without that private key",
             "    (including the verifier) could have produced these records.",
-            "  + The sequence is complete and ordered as signed: nothing was",
-            "    inserted, deleted, or reordered inside this export.",
+        ]
+        if single_receipt:
+            lines += [
+                "  + The receipt provably sits at its signed position in the log,",
+                "    without any other entry being disclosed (Merkle inclusion).",
+            ]
+        else:
+            lines += [
+                "  + The sequence is complete and ordered as signed: nothing was",
+                "    inserted, deleted, or reordered inside this export.",
+            ]
+        lines += [
             f"  + The signed head commits the exporter to exactly "
-            f"{report['entry_count']} receipt(s); a future export of this chain",
+            f"{committed} receipt(s); a future export of this chain",
             "    with fewer entries contradicts a commitment they already signed.",
         ]
     else:
@@ -146,24 +158,38 @@ def _ascii(text: str) -> str:
     return text.replace("—", "--").replace("…", "...")
 
 
-def _cmd_verify(args: argparse.Namespace) -> int:
-    bundle_path = Path(args.bundle).expanduser()
-    try:
-        bundle = json.loads(bundle_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as e:
-        print(f"error: cannot read bundle {bundle_path}: {e}", file=sys.stderr)
-        return 2
+class _UsageError(Exception):
+    """Bad input on the command line or an unreadable file; exit code 2."""
 
-    pinned: Optional[Dict[str, str]] = None
-    if args.public_key:
-        pinned = {}
-        for public_key_hex in args.public_key:
-            try:
-                verifier = signing.Ed25519Verifier(public_key_hex)
-            except ValueError as e:
-                print(f"error: bad --public-key: {e}", file=sys.stderr)
-                return 2
-            pinned[verifier.key_id] = verifier.public_key_hex()
+
+def _load_json(path_str: str, what: str) -> dict:
+    try:
+        return json.loads(Path(path_str).expanduser().read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as e:
+        raise _UsageError(f"cannot read {what} {path_str}: {e}") from e
+
+
+def _pinned_keys(args: argparse.Namespace) -> Optional[Dict[str, str]]:
+    """The pinned-keys map from --public-key flags, or None when unpinned."""
+    if not args.public_key:
+        return None
+    pinned: Dict[str, str] = {}
+    for public_key_hex in args.public_key:
+        try:
+            verifier = signing.Ed25519Verifier(public_key_hex)
+        except ValueError as e:
+            raise _UsageError(f"bad --public-key: {e}") from e
+        pinned[verifier.key_id] = verifier.public_key_hex()
+    return pinned
+
+
+def _cmd_verify(args: argparse.Namespace) -> int:
+    bundle = _load_json(args.bundle, "bundle")
+    pinned = _pinned_keys(args)
+
+    consistent_with = None
+    if getattr(args, "consistent_with", None):
+        consistent_with = _load_json(args.consistent_with, "older bundle")
 
     hmac_key = args.hmac_key.encode("utf-8") if args.hmac_key else None
 
@@ -172,18 +198,22 @@ def _cmd_verify(args: argparse.Namespace) -> int:
         pinned_public_keys=pinned,
         hmac_key=hmac_key,
         expected_head=args.expect_head,
+        consistent_with=consistent_with,
     )
+    return _print_report(report, args.bundle, as_json=args.json)
 
-    if args.json:
+
+def _print_report(report: dict, path: str, *, as_json: bool) -> int:
+    if as_json:
         print(json.dumps(report, indent=2, sort_keys=True))
         return 0 if report["ok"] else 1
 
-    print(f"AgentBrake receipt verification: {bundle_path}")
+    print(f"AgentBrake receipt verification: {path}")
     print(
         f"  entries: {report['entry_count']}   chain_id: {report['chain_id']}   "
         f"algorithms: {', '.join(report['algorithms']) or '(empty chain)'}"
     )
-    key_note = "PINNED by verifier" if report["keys_pinned"] else "embedded in bundle — compare out-of-band"
+    key_note = "PINNED by verifier" if report["keys_pinned"] else "embedded in bundle -- compare out-of-band"
     print(f"  trusted key_id(s): {', '.join(report['public_keys']) or '(none)'}  [{key_note}]")
     print()
     for chk in report["checks"]:
@@ -196,6 +226,49 @@ def _cmd_verify(args: argparse.Namespace) -> int:
     verdict = "VERIFIED" if report["ok"] else "VERIFICATION FAILED"
     print(f"Verdict: {verdict}")
     return 0 if report["ok"] else 1
+
+
+# ----- prove / verify-receipt (selective disclosure) ---------------------------
+
+def _cmd_prove(args: argparse.Namespace) -> int:
+    if args.receipts:
+        rows = export_mod.rows_from_jsonl(args.receipts)
+    else:
+        rows = export_mod.rows_from_db(args.db)
+
+    signer, key_source = signing.resolve_signer_from_env()
+    if key_source == "generated":
+        signer = None
+        print(
+            "warning: no signing key configured; the head in this proof will be "
+            "UNSIGNED and carries no commitment.",
+            file=sys.stderr,
+        )
+
+    try:
+        proof = export_mod.build_receipt_proof(rows, args.seq, signer=signer)
+    except ValueError as e:
+        raise _UsageError(str(e)) from e
+
+    target = export_mod.write_export(proof, args.out)
+    statement = proof["head"]["statement"]
+    print(f"Inclusion proof for receipt seq={args.seq} written to {target}")
+    print(
+        f"Proves membership at position {proof['leaf_index']} of a log of "
+        f"{statement['tree_size']} (root {statement['tree_root'][:16]}..) "
+        "without disclosing any other receipt."
+    )
+    return 0
+
+
+def _cmd_verify_receipt(args: argparse.Namespace) -> int:
+    proof = _load_json(args.proof, "receipt proof")
+    pinned = _pinned_keys(args)
+    hmac_key = args.hmac_key.encode("utf-8") if args.hmac_key else None
+    report = export_mod.verify_receipt_proof(
+        proof, pinned_public_keys=pinned, hmac_key=hmac_key
+    )
+    return _print_report(report, args.proof, as_json=args.json)
 
 
 # ----- entry point ------------------------------------------------------------
@@ -242,15 +315,51 @@ def build_parser() -> argparse.ArgumentParser:
         type=_parse_expected_head,
         help="LENGTH:HEAD_HASH from a previously pinned export; detects rollback",
     )
+    verify.add_argument(
+        "--consistent-with",
+        help="path to an OLDER bundle of the same chain; verifies it is an "
+        "exact prefix of this one (Merkle-root recomputation)",
+    )
     verify.add_argument("--json", action="store_true", help="machine-readable report")
     verify.set_defaults(func=_cmd_verify)
+
+    prove = sub.add_parser(
+        "prove",
+        help="extract ONE receipt with an inclusion proof (selective disclosure)",
+    )
+    src = prove.add_mutually_exclusive_group(required=True)
+    src.add_argument("--receipts", help="path to a receipts.jsonl ledger")
+    src.add_argument("--db", help="path to a server agentbrake.db")
+    prove.add_argument("--seq", type=int, required=True, help="receipt sequence number")
+    prove.add_argument("-o", "--out", default="receipt_proof.json")
+    prove.set_defaults(func=_cmd_prove)
+
+    verify_receipt = sub.add_parser(
+        "verify-receipt",
+        help="verify a single-receipt proof offline (no log, no server)",
+    )
+    verify_receipt.add_argument("proof", help="path to the receipt proof JSON")
+    verify_receipt.add_argument(
+        "--public-key",
+        action="append",
+        help="pin the trusted public key(s) (hex); embedded keys are then ignored",
+    )
+    verify_receipt.add_argument(
+        "--hmac-key", help="shared secret for legacy HMAC receipts (integrity-only)"
+    )
+    verify_receipt.add_argument("--json", action="store_true", help="machine-readable report")
+    verify_receipt.set_defaults(func=_cmd_verify_receipt)
 
     return parser
 
 
 def main(argv: Optional[list] = None) -> int:
     args = build_parser().parse_args(argv)
-    return args.func(args)
+    try:
+        return args.func(args)
+    except _UsageError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
 
 
 if __name__ == "__main__":
