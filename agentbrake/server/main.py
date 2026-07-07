@@ -156,8 +156,9 @@ def get_status(interrupt_id: str) -> StatusOut:
 #
 # These read-only endpoints are intentionally unauthenticated: a receipt is a
 # proof meant to be independently verifiable, and it stores only digests of the
-# tool call / displayed info, never raw args. Verifying needs the signing key,
-# which never leaves the server.
+# tool call / displayed info, never raw args. The `signature_valid` flag is the
+# server checking itself — a third party should not take its word for it, but
+# run `agentbrake verify` on an export bundle with only the public key.
 
 def _attestation_view(record: Dict[str, Any]) -> Dict[str, Any]:
     """Shape a stored attestation row into an API response with a verify flag."""
@@ -168,9 +169,7 @@ def _attestation_view(record: Dict[str, Any]) -> Dict[str, Any]:
         "signature": record["signature"],
         "prev_hash": record["prev_hash"],
         "entry_hash": record["entry_hash"],
-        "signature_valid": attest.verify_signature(
-            record["attestation_json"], record["signature"]
-        ),
+        "signature_valid": attest.verify_record(record),
     }
 
 
@@ -180,6 +179,20 @@ def verify_attestation_chain() -> Dict[str, Any]:
     chain = store.get_attestation_chain()
     ok, error = attest.verify_chain(chain)
     return {"ok": ok, "count": len(chain), "error": error}
+
+
+@app.get("/attestations/export")
+def export_attestation_chain() -> Dict[str, Any]:
+    """Self-contained export bundle: entries + public key + signed chain head.
+
+    This is what an operator hands to an auditor. Verification happens on the
+    auditor's machine with `agentbrake verify` — offline, public key only —
+    so the verdict does not rest on trusting this server.
+    """
+    from agentbrake import export as export_mod
+
+    chain = store.get_attestation_chain()
+    return export_mod.build_export(chain, signer=attest.SIGNER)
 
 
 @app.get("/attestations")

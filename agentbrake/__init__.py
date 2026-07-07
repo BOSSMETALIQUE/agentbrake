@@ -17,7 +17,7 @@ from .detectors import (
     cost_from_tokens,
 )
 from .flow import FlowPolicy, FlowRuleDetector, block_exfiltration
-from . import receipts
+from . import receipts, signing
 from .types import AgentBrakeInterrupt, InterruptReason, RunState, ToolCall
 
 __version__ = "0.1.0"
@@ -41,6 +41,7 @@ __all__ = [
     "FlowRuleDetector",
     "block_exfiltration",
     "receipts",
+    "signing",
     "__version__",
 ]
 
@@ -116,6 +117,23 @@ class Run:
     def verify_receipts(self):
         """Verify this run's receipt chain. Returns ``(ok, error_message)``."""
         return receipts.verify_chain(self.flow_ledger.all())
+
+    def export_receipts(self, path: Optional[str] = None) -> dict:
+        """Build a self-contained export bundle of this run's receipt chain.
+
+        The bundle embeds the public key and a signed chain head, so a third
+        party can verify it offline with ``agentbrake verify`` — no server, no
+        private key, no trust in this process. Writes JSON to ``path`` if
+        given; returns the bundle either way.
+        """
+        from . import export as export_mod
+
+        bundle = export_mod.build_export(
+            self.flow_ledger.all(), signer=export_mod.default_signer()
+        )
+        if path:
+            export_mod.write_export(bundle, path)
+        return bundle
 
     def __enter__(self) -> "Run":
         self._token = _current_run.set(self)

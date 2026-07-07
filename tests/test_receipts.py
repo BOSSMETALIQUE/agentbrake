@@ -7,17 +7,17 @@ from pathlib import Path
 import pytest
 
 import agentbrake
-from agentbrake import AgentBrakeInterrupt, InterruptReason, block_exfiltration, receipts
+from agentbrake import AgentBrakeInterrupt, InterruptReason, block_exfiltration, receipts, signing
 from agentbrake.server import attest
 from agentbrake.types import RunState, ToolCall
 
-SIGNING_KEY = b"test-flow-signing-key"
+TEST_SIGNER = signing.Ed25519Signer.from_seed(b"\x03" * 32)
 
 
 @pytest.fixture(autouse=True)
 def _fixed_key(monkeypatch: pytest.MonkeyPatch):
     """Pin the signing key so receipts verify deterministically."""
-    monkeypatch.setattr(attest, "SIGNING_KEY", SIGNING_KEY)
+    monkeypatch.setattr(attest, "SIGNER", TEST_SIGNER)
 
 
 def _flow(sink: str = "send_email") -> dict:
@@ -50,7 +50,10 @@ def test_mint_produces_signed_chained_receipt():
 
     ok, error = receipts.verify_chain(ledger.all())
     assert ok, error
-    assert attest.verify_signature(row["attestation_json"], row["signature"]) is True
+    # Third-party check: the signature verifies under the public key alone.
+    public_keys = {TEST_SIGNER.key_id: TEST_SIGNER.public_key_hex()}
+    ok, error = receipts.verify_chain(ledger.all(), public_keys=public_keys)
+    assert ok, error
 
 
 def test_multiple_blocks_chain_linearly():
@@ -83,6 +86,33 @@ def test_tampering_breaks_the_receipt():
     ok, error = receipts.verify_chain(chain)
     assert ok is False
     assert "signature" in error
+
+
+def test_concurrent_mints_do_not_fork_the_chain():
+    """Regression: tail-read -> append was not atomic, so two threads could
+    both mint seq N+1 and fork the chain. Minting is now serialized."""
+    import threading
+
+    ledger = receipts.InMemoryLedger()
+    state = RunState()
+    n_threads, per_thread = 8, 5
+
+    def mint_many():
+        for _ in range(per_thread):
+            receipts.mint_flow_receipt(
+                ledger, run_state=state, sink_call=ToolCall(name="send_email"), flow=_flow()
+            )
+
+    threads = [threading.Thread(target=mint_many) for _ in range(n_threads)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    chain = ledger.all()
+    assert [r["seq"] for r in chain] == list(range(1, n_threads * per_thread + 1))
+    ok, error = receipts.verify_chain(chain)
+    assert ok, error
 
 
 # --- durable JsonlLedger --------------------------------------------------

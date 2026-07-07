@@ -8,12 +8,15 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
+from agentbrake import signing
 from agentbrake.server import attest, security, store
 from agentbrake.server import main as server_main
 
 SDK = "test-sdk"
 APPROVER = "test-approver"
 SIGNING_KEY = b"test-signing-key"
+# Deterministic Ed25519 key so signatures are reproducible across test runs.
+TEST_SIGNER = signing.Ed25519Signer.from_seed(b"\x01" * 32)
 SDK_HEADERS = {"X-SDK-Secret": SDK}
 APPROVER_HEADERS = {"X-Approver-Secret": APPROVER}
 
@@ -25,6 +28,7 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
     monkeypatch.setattr(security, "SDK_SECRET", SDK)
     monkeypatch.setattr(security, "APPROVER_SECRET", APPROVER)
     monkeypatch.setattr(attest, "SIGNING_KEY", SIGNING_KEY)
+    monkeypatch.setattr(attest, "SIGNER", TEST_SIGNER)
     store.init_db(db_path)
     return TestClient(server_main.app)
 
@@ -72,6 +76,10 @@ def test_decision_creates_attestation(client: TestClient) -> None:
     att = body["attestation"]
 
     assert att["seq"] == 1
+    assert att["version"] == "2"
+    assert att["alg"] == "ed25519"
+    assert att["key_id"] == TEST_SIGNER.key_id
+    assert att["chain_id"]  # minted at genesis, non-empty
     assert att["interrupt_id"] == iid
     assert att["run_id"] == "run-1"
     assert att["agent_id"] == "agent-7"
@@ -113,7 +121,17 @@ def test_signature_verifies(client: TestClient) -> None:
     iid = _create(client)
     _decide(client, iid)
     rec = store.get_attestation(iid)
-    assert attest.verify_signature(rec["attestation_json"], rec["signature"]) is True
+    assert attest.verify_record(rec) is True
+
+
+def test_signature_verifies_with_public_key_only(client: TestClient) -> None:
+    """The third-party property: verification needs no private material."""
+    iid = _create(client)
+    _decide(client, iid)
+    rec = store.get_attestation(iid)
+    public_keys = {TEST_SIGNER.key_id: TEST_SIGNER.public_key_hex()}
+    ok, error = attest.verify_chain([rec], public_keys=public_keys)
+    assert ok, error
 
 
 def test_tampering_breaks_signature(client: TestClient) -> None:
@@ -124,14 +142,20 @@ def test_tampering_breaks_signature(client: TestClient) -> None:
     # Flip the decision in the signed body; the old signature must no longer verify.
     tampered = rec["attestation_json"].replace('"decision":"approve"', '"decision":"kill"')
     assert tampered != rec["attestation_json"]
-    assert attest.verify_signature(tampered, rec["signature"]) is False
+    rec["attestation_json"] = tampered
+    rec["attestation"] = None  # force verify_record to re-parse the raw JSON
+    assert attest.verify_record(rec) is False
 
 
-def test_wrong_key_does_not_verify(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_wrong_key_does_not_verify(client: TestClient) -> None:
+    """A record verified against a *different* public key must fail — even one
+    presented under the correct key_id (a substituted-key attack)."""
     iid = _create(client)
     _decide(client, iid)
     rec = store.get_attestation(iid)
-    assert attest.verify_signature(rec["attestation_json"], rec["signature"], key=b"other") is False
+    other = signing.Ed25519Signer.from_seed(b"\x02" * 32)
+    substituted = {TEST_SIGNER.key_id: other.public_key_hex()}
+    assert attest.verify_record(rec, public_keys=substituted) is False
 
 
 # --- Hash chain links correctly -------------------------------------------
@@ -227,6 +251,26 @@ def test_chain_detects_relinked_prev_hash(client: TestClient) -> None:
     # the entry-hash recomputation rather than passing silently.
     ok, error = attest.verify_chain(store.get_attestation_chain())
     assert ok is False
+
+
+# --- Export endpoint: the server-to-auditor handoff ------------------------
+
+def test_export_endpoint_bundle_verifies_offline(client: TestClient) -> None:
+    """GET /attestations/export produces a bundle an auditor can verify with
+    only the public key — the server's own honesty is not an input."""
+    from agentbrake import export as export_mod
+
+    for _ in range(3):
+        _decide(client, _create(client))
+
+    bundle = client.get("/attestations/export").json()
+    report = export_mod.verify_export(
+        bundle,
+        pinned_public_keys={TEST_SIGNER.key_id: TEST_SIGNER.public_key_hex()},
+    )
+    assert report["ok"], report["checks"]
+    assert report["entry_count"] == 3
+    assert report["third_party_verifiable"] is True
 
 
 # --- Pure-unit checks of the primitives -----------------------------------

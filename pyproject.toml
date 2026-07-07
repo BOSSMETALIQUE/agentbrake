@@ -11,7 +11,13 @@ requires-python = ">=3.9"
 dependencies = [
     "httpx>=0.27",
     "pydantic>=2.0",
+    # Ed25519 receipt signatures — the third-party-verifiable core of the
+    # receipt system, so it is a core dependency, not an extra.
+    "cryptography>=42",
 ]
+
+[project.scripts]
+agentbrake = "agentbrake.cli:main"
 
 [project.optional-dependencies]
 # Everything pytest needs to run the full test suite (detectors + backend).

@@ -38,6 +38,13 @@ from .types import RunState, ToolCall
 GENESIS_HASH = attest.GENESIS_HASH
 RECEIPT_VERSION = attest.ATTESTATION_VERSION
 
+# Serializes read-tail -> build -> sign -> append, mirroring the server's
+# _CHAIN_LOCK: without it two threads blocking concurrently could both read
+# the same tail and mint the same seq, forking the chain. One process-wide
+# lock (rather than per-ledger) keeps the Ledger protocol minimal; minting is
+# rare enough that the contention is irrelevant.
+_MINT_LOCK = threading.Lock()
+
 
 # ----- ledgers ------------------------------------------------------------
 
@@ -128,6 +135,7 @@ def build_flow_attestation(
     run_id: Optional[str],
     sink_call: ToolCall,
     flow: Dict[str, Any],
+    chain_id: str,
     agent_id: Optional[str] = None,
     blocked_at: Optional[str] = None,
 ) -> Dict[str, Any]:
@@ -139,6 +147,9 @@ def build_flow_attestation(
     """
     return {
         "version": RECEIPT_VERSION,
+        "alg": attest.SIGNER.alg,
+        "key_id": attest.SIGNER.key_id,
+        "chain_id": chain_id,
         "seq": seq,
         "kind": "flow_block",
         "run_id": run_id,
@@ -164,35 +175,37 @@ def mint_flow_receipt(
 ) -> Dict[str, Any]:
     """Build, sign, chain and persist the receipt for one flow block.
 
-    Signs with the shared ``attest.SIGNING_KEY`` so the receipt verifies through
+    Signs with the shared ``attest.SIGNER`` so the receipt verifies through
     the same path as a human-decision attestation. Returns the stored row.
     """
-    tail = ledger.tail()
-    seq = (tail["seq"] + 1) if tail else 1
-    prev_hash = tail["entry_hash"] if tail else GENESIS_HASH
+    with _MINT_LOCK:
+        tail = ledger.tail()
+        seq = (tail["seq"] + 1) if tail else 1
+        prev_hash = tail["entry_hash"] if tail else GENESIS_HASH
 
-    attestation = build_flow_attestation(
-        seq=seq,
-        prev_hash=prev_hash,
-        run_id=run_state.run_id,
-        sink_call=sink_call,
-        flow=flow,
-        agent_id=agent_id,
-    )
-    attestation_json = attest.canonical_json(attestation)
-    signature = attest.sign(attestation_json)
-    e_hash = attest.entry_hash(attestation_json, signature)
+        attestation = build_flow_attestation(
+            seq=seq,
+            prev_hash=prev_hash,
+            run_id=run_state.run_id,
+            sink_call=sink_call,
+            flow=flow,
+            chain_id=attest.chain_id_from_tail(tail),
+            agent_id=agent_id,
+        )
+        attestation_json = attest.canonical_json(attestation, strict=True)
+        signature = attest.sign_body(attestation_json)
+        e_hash = attest.entry_hash(attestation_json, signature)
 
-    row = {
-        "seq": seq,
-        "run_id": run_state.run_id,
-        "attestation": attestation,
-        "attestation_json": attestation_json,
-        "signature": signature,
-        "prev_hash": prev_hash,
-        "entry_hash": e_hash,
-    }
-    ledger.append(row)
+        row = {
+            "seq": seq,
+            "run_id": run_state.run_id,
+            "attestation": attestation,
+            "attestation_json": attestation_json,
+            "signature": signature,
+            "prev_hash": prev_hash,
+            "entry_hash": e_hash,
+        }
+        ledger.append(row)
     return row
 
 
@@ -207,6 +220,16 @@ def receipt_summary(row: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def verify_chain(rows: List[Dict[str, Any]]) -> Tuple[bool, Optional[str]]:
-    """Verify a receipt chain with the server's verifier (signatures + links)."""
-    return attest.verify_chain(rows)
+def verify_chain(
+    rows: List[Dict[str, Any]],
+    *,
+    public_keys: Optional[Dict[str, str]] = None,
+    hmac_key: Optional[bytes] = None,
+) -> Tuple[bool, Optional[str]]:
+    """Verify a receipt chain with the server's verifier (signatures + links).
+
+    With no arguments this is a self-check under the process's own signer. To
+    verify as a third party, pass ``public_keys`` ({key_id: public_key_hex}) —
+    no private material needed.
+    """
+    return attest.verify_chain(rows, public_keys=public_keys, hmac_key=hmac_key)
