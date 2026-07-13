@@ -271,6 +271,53 @@ def _cmd_verify_receipt(args: argparse.Namespace) -> int:
     return _print_report(report, args.proof, as_json=args.json)
 
 
+# ----- report -------------------------------------------------------------------
+
+def _parse_date(value: str) -> "datetime":
+    from datetime import datetime, timezone
+
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError as e:
+        raise argparse.ArgumentTypeError(
+            f"{value!r} is not an ISO date (e.g. 2026-07-01 or 2026-07-01T00:00:00+00:00)"
+        ) from e
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+def _cmd_report(args: argparse.Namespace) -> int:
+    from agentbrake import report as report_mod
+
+    bundle = _load_json(args.bundle, "bundle")
+    pinned = _pinned_keys(args)
+    hmac_key = args.hmac_key.encode("utf-8") if args.hmac_key else None
+
+    verification = export_mod.verify_export(
+        bundle, pinned_public_keys=pinned, hmac_key=hmac_key
+    )
+    report = report_mod.build_report(
+        bundle,
+        verification,
+        period_start=getattr(args, "from"),
+        period_end=args.to,
+        source_name=str(args.bundle),
+    )
+    document = report_mod.render_markdown(report)
+
+    Path(args.out).expanduser().write_text(document, encoding="utf-8")
+    verdict = "VERIFIED" if verification["ok"] else "VERIFICATION FAILED"
+    print(f"Compliance report written to {args.out} (evidence: {verdict})")
+    print(
+        f"  {report['events_in_period']} event(s) in period: "
+        f"{report['summary']['autonomous_blocks']} autonomous block(s), "
+        f"{report['summary']['human_kills']} human kill(s), "
+        f"{report['summary']['human_approvals']} human approval(s)"
+    )
+    return 0 if verification["ok"] else 1
+
+
 # ----- entry point ------------------------------------------------------------
 
 def build_parser() -> argparse.ArgumentParser:
@@ -349,6 +396,29 @@ def build_parser() -> argparse.ArgumentParser:
     )
     verify_receipt.add_argument("--json", action="store_true", help="machine-readable report")
     verify_receipt.set_defaults(func=_cmd_verify_receipt)
+
+    report = sub.add_parser(
+        "report",
+        help="generate an auditor-readable compliance report from a bundle",
+    )
+    report.add_argument("bundle", help="path to the export bundle JSON")
+    report.add_argument("-o", "--out", default="compliance_report.md")
+    report.add_argument(
+        "--public-key",
+        action="append",
+        help="pin the trusted public key(s) (hex) for the embedded verification",
+    )
+    report.add_argument(
+        "--hmac-key", help="shared secret for legacy HMAC receipts (integrity-only)"
+    )
+    report.add_argument(
+        "--from", type=_parse_date, default=None, dest="from",
+        help="period start (ISO date)",
+    )
+    report.add_argument(
+        "--to", type=_parse_date, default=None, help="period end (ISO date)"
+    )
+    report.set_defaults(func=_cmd_report)
 
     return parser
 

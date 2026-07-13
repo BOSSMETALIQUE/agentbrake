@@ -192,6 +192,7 @@ The SDK is the only piece you import. In local mode (default), it raises on dete
 - [x] Signed, hash-chained attestations (verifiable receipts) — human decisions **and** flow blocks
 - [x] Third-party verification: Ed25519 receipts, export bundles, standalone `agentbrake verify` CLI
 - [x] RFC 6962 Merkle log: signed tree root, cross-export consistency, single-receipt inclusion proofs
+- [x] Compliance report: auditor-readable Markdown generated from a verified bundle (`agentbrake report`)
 - [ ] Slack / webhook integration for human-in-the-loop
 - [ ] PyPI release
 
@@ -316,6 +317,19 @@ agentbrake verify-receipt receipt_proof.json --public-key <hex>
 ```
 
 To be precise about what the tree buys: it does **not** change the trust model (the key holder could still regenerate a parallel tree — anchoring heads externally remains the answer). What it adds is disclosure control and efficiency: membership proofs that don't require shipping, or revealing, the rest of the log.
+
+### The compliance report
+
+Receipts prove *that* enforcement happened; the report explains *what* happened, in language a CISO or auditor can act on:
+
+```bash
+agentbrake report receipts_export.json -o compliance_report.md \
+    --public-key <hex> --from 2026-07-01 --to 2026-07-31
+```
+
+The generated Markdown document contains an executive summary (attacks blocked automatically, runs stopped by a human, interrupts reviewed and approved, human response times), a plain-language narrative for each blocked attack — *"the agent ingested untrusted content via `read_webpage` (call #0), then attempted to call `send_email`; AgentBrake blocked the call before it executed"* — a table of human decisions, and an evidence appendix referencing each event's signed receipt with the exact commands to re-verify it independently.
+
+Two properties keep the report honest. It is generated **from the export bundle, never from the raw database**, and the bundle is cryptographically verified first — the verdict leads the document, and a failed verification produces a prominent warning banner instead of quietly reporting on untrusted data (the CLI also exits non-zero). And the report ends with the same scope-and-limits statement the verifier prints: what the evidence proves, and what it does not.
 
 ### What a receipt proves — and what it doesn't
 
