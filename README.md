@@ -136,7 +136,13 @@ except AgentBrakeInterrupt as e:
 ok, error = r.verify_receipts()      # True — the proof verifies
 ```
 
-See [`examples/05_prompt_injection_exfiltration.py`](examples/05_prompt_injection_exfiltration.py) for a self-contained, runnable demo (no API key, no server).
+See [`examples/05_prompt_injection_exfiltration.py`](examples/05_prompt_injection_exfiltration.py) for a self-contained, runnable demo (no API key, no server) — or run the full pipeline in one command:
+
+```bash
+python examples/06_verifiable_audit_trail.py
+```
+
+This stages the attack, blocks it twice, exports the signed receipt bundle, verifies it offline with a pinned public key, **tampers with a copy and shows verification fail**, produces a single-receipt inclusion proof, and generates the compliance report — every artifact landing in `./demo_output/`.
 
 ### Limitations (read these)
 

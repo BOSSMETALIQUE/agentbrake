@@ -28,9 +28,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-# Pin a signing key BEFORE importing agentbrake so the receipt is verifiable and
-# stable across runs. In production set AGENTBRAKE_SIGNING_KEY to a real secret.
-os.environ.setdefault("AGENTBRAKE_SIGNING_KEY", "demo-key-not-for-production")
+# Pin an Ed25519 seed BEFORE importing agentbrake so the receipt is signed with
+# a stable, third-party-verifiable key across runs. This seed is public (it is
+# in the repo), so it proves nothing outside this demo — in production generate
+# a private key once with `agentbrake keygen` and keep it secret.
+os.environ.setdefault("AGENTBRAKE_SIGNING_SEED", "1f" * 32)
 
 import agentbrake  # noqa: E402
 from agentbrake import AgentBrakeInterrupt, block_exfiltration  # noqa: E402
