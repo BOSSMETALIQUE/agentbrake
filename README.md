@@ -417,6 +417,27 @@ pytest
 
 We don't compete with these — we complement them. Run AgentBrake as your last line of defense before the tool actually executes.
 
+## Security coverage - OWASP Top 10 for Agentic Applications (2026)
+
+AgentBrake maps to the [OWASP Top 10 for Agentic Applications (2026)](https://genai.owasp.org/resource/owasp-top-10-for-agentic-applications-for-2026/) - the peer-reviewed risk taxonomy security teams now use to evaluate agent deployments. Every enforcement decision AgentBrake makes produces an **Ed25519-signed, hash-chained receipt** that a third party (an auditor, a client's security team) can verify **offline with only the public key** - no trust in the AgentBrake server required.
+
+| OWASP | Risk | AgentBrake |
+|-------|------|------------|
+| **ASI02** | Tool Misuse | Tool allow-list + loop / retry-storm detection stop recursive tool abuse. |
+| **ASI01** | Agent Goal Hijack | Flow-control engine (taint tracking) blocks injection to exfiltration. |
+| **ASI08** | Cascading Failures | Circuit-breaker halt-and-escalate before a failure snowballs. |
+| **ASI10** | Rogue Agents | Verifiable audit trail for post-incident forensics. |
+| **ASI03** | Identity Abuse | Roadmap - signed delegation. Ed25519 foundation ready. |
+| **ASI06** | Memory Poisoning | Roadmap - signed memory entries. |
+
+**Not in scope (by design):** AgentBrake enforces *actions*, not *content*. Use it alongside text-filtering guardrails.
+
+### Why this matters now
+
+- **EU AI Act high-risk obligations live since August 2, 2026.** Penalties up to 7% of global turnover.
+- **OWASP published a dedicated Top 10 for Agentic Applications** (Dec 2025).
+- **Auditors want evidence.** AgentBrake produces that record and makes it independently verifiable.
+
 ---
 
 Built by [BOSSMETALIQUE](https://github.com/BOSSMETALIQUE). MIT License. Feedback welcome on GitHub Issues.
