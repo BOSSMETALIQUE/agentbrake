@@ -8,6 +8,8 @@
   <a href="https://github.com/BOSSMETALIQUE/agentbrake/actions"><img alt="Tests" src="https://github.com/BOSSMETALIQUE/agentbrake/actions/workflows/tests.yml/badge.svg"></a>
 </p>
 
+> 🇪🇺 **EU AI Act — August 2, 2026.** High-risk system obligations are now enforceable, with penalties up to 7% of global turnover. Auditors expect *demonstrable* runtime controls — not written policies. AgentBrake produces cryptographic proof of every enforcement decision, verifiable offline by a third party with only the public key. See [Security coverage](#security-coverage---owasp-top-10-for-agentic-applications-2026).
+
 > **⚡ Status:** v0.1.0 — Local mode is stable (123/123 tests passing). Remote mode is secured with split SDK/approver secrets, and every decision — human *and* autonomous flow blocks — produces a **signed, hash-chained receipt** that a third party can verify offline with the standalone `agentbrake verify` CLI (see [Verifiable receipts](#verifiable-receipts)). A **flow-control engine with taint tracking** stops prompt-injection → exfiltration (see [Flow control](#flow-control-taint-tracking)). PyPI release coming soon. Looking for early users to validate the API.
 
 ## The problem
