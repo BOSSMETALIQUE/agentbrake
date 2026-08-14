@@ -191,6 +191,7 @@ def grant(
     parent: Optional[DelegationToken] = None,
     signer: Optional[signing.Signer] = None,
     issued_at: Optional[datetime] = None,
+    ledger: Optional[Any] = None,
 ) -> DelegationToken:
     """Create and sign one delegation link; returns the full chain.
 
@@ -200,6 +201,11 @@ def grant(
     be a subset of the parent's. ``signer`` defaults to the process signer
     and must be Ed25519 — delegation has no legacy-HMAC mode, because a token
     that any verifier could forge would not carry authority anywhere.
+
+    The grant is receipted: a ``delegation_grant`` receipt is minted into the
+    active run's ledger (or an explicit ``ledger``), embedding the full signed
+    token. A grant issued outside any run and without a ledger produces no
+    receipt — if the audit trail matters there, pass one.
     """
     active_signer = signer if signer is not None else attest.SIGNER
     if active_signer.alg != signing.ALG_ED25519:
@@ -260,7 +266,71 @@ def grant(
     signature = _sign_token(token_json, active_signer)
     link = {"token_json": token_json, "signature": signature}
     links = (parent.links + [link]) if parent is not None else [link]
-    return DelegationToken(links)
+    token = DelegationToken(links)
+    record_event("delegation_grant", "grant", token, ledger=ledger)
+    return token
+
+
+# ----- receipts for delegation decisions ---------------------------------------
+
+def token_receipt_payload(token: DelegationToken) -> Dict[str, Any]:
+    """The receipt payload for a token: full signed links plus derived facts.
+
+    Embedding the links (not just a digest) is what lets an auditor re-verify
+    the delegation itself from the receipt chain alone — see the
+    ``delegation_tokens`` deep check in :mod:`agentbrake.export`.
+    """
+    expires = token.effective_expires_at()
+    return {
+        "links": [dict(link) for link in token.links],
+        "token_digest": token.digest,
+        "delegator": token.delegator,
+        "delegatee": token.delegatee,
+        "intent_digest": token.intent_digest,
+        "allowed_tools": token.allowed_tools,
+        "expires_at": expires.isoformat() if expires else None,
+    }
+
+
+def record_event(
+    kind: str,
+    decision: str,
+    token: DelegationToken,
+    *,
+    ledger: Optional[Any] = None,
+    run_id: Optional[str] = None,
+    tool: Optional[str] = None,
+    extra: Optional[Dict[str, Any]] = None,
+) -> Optional[Dict[str, Any]]:
+    """Mint a signed, chained receipt for one delegation decision.
+
+    With no explicit ``ledger``, the active run's ledger is used; outside any
+    run the event goes unreceipted and None is returned (documented behavior —
+    receipts live in a run's chain).
+    """
+    from . import receipts  # local import: receipts is independent of this module
+
+    if ledger is None:
+        from agentbrake import current_run  # deferred: the package imports us
+
+        active = current_run()
+        if active is None:
+            return None
+        ledger = active.flow_ledger
+        run_id = active.state.run_id
+
+    payload = token_receipt_payload(token)
+    if extra:
+        payload.update(extra)
+    return receipts.mint_delegation_receipt(
+        ledger,
+        kind=kind,
+        decision=decision,
+        run_id=run_id,
+        delegation=payload,
+        tool=tool,
+        agent_id=token.delegatee,
+    )
 
 
 # ----- verification -----------------------------------------------------------

@@ -35,7 +35,12 @@ _REASON_LABELS = {
     "loop": "Runaway loop / retry storm",
     "budget": "Budget ceiling reached",
     "timeout": "Human validation timed out",
+    "delegation": "Delegated-privilege misuse (out-of-scope or expired mandate)",
 }
+
+# Kinds of autonomous blocks vs. delegation lifecycle events vs. human decisions.
+_BLOCK_KINDS = {"flow_block", "delegation_block"}
+_DELEGATION_LIFECYCLE_KINDS = {"delegation_grant", "delegation_accept", "delegation_reject"}
 
 
 def _parse_ts(value: Optional[str]) -> Optional[datetime]:
@@ -52,7 +57,11 @@ def _parse_ts(value: Optional[str]) -> Optional[datetime]:
 
 def _event_time(attestation: Dict[str, Any]) -> Optional[str]:
     """The moment the event became final: human decision time, or block time."""
-    return attestation.get("decided_at") or attestation.get("blocked_at")
+    return (
+        attestation.get("decided_at")
+        or attestation.get("blocked_at")
+        or attestation.get("recorded_at")
+    )
 
 
 def _within(ts: Optional[str], period: Tuple[Optional[datetime], Optional[datetime]]) -> bool:
@@ -108,12 +117,20 @@ def build_report(
                 "agent_id": attestation.get("agent_id"),
                 "pending_seconds": attestation.get("pending_seconds"),
                 "flow": attestation.get("flow"),
+                "delegation": attestation.get("delegation"),
                 "evidence": _evidence_ref(entry),
             }
         )
 
     flow_blocks = [e for e in events if e["kind"] == "flow_block"]
-    human = [e for e in events if e["kind"] != "flow_block"]
+    delegation_blocks = [e for e in events if e["kind"] == "delegation_block"]
+    delegation_lifecycle = [
+        e for e in events if e["kind"] in _DELEGATION_LIFECYCLE_KINDS
+    ]
+    human = [
+        e for e in events
+        if e["kind"] not in _BLOCK_KINDS and e["kind"] not in _DELEGATION_LIFECYCLE_KINDS
+    ]
     kills = [e for e in human if e["decision"] == "kill"]
     approvals = [e for e in human if e["decision"] == "approve"]
 
@@ -142,9 +159,15 @@ def build_report(
         "verification": verification,
         "events_in_period": len(events),
         "summary": {
-            "autonomous_blocks": len(flow_blocks),
+            "autonomous_blocks": len(flow_blocks) + len(delegation_blocks),
             "human_kills": len(kills),
             "human_approvals": len(approvals),
+            "delegations_granted": len(
+                [e for e in delegation_lifecycle if e["kind"] == "delegation_grant"]
+            ),
+            "delegations_rejected": len(
+                [e for e in delegation_lifecycle if e["kind"] == "delegation_reject"]
+            ),
             "by_reason": by_reason,
             "mean_decision_seconds": (
                 round(sum(decision_times) / len(decision_times), 1)
@@ -154,6 +177,8 @@ def build_report(
             "max_decision_seconds": max(decision_times) if decision_times else None,
         },
         "flow_blocks": flow_blocks,
+        "delegation_blocks": delegation_blocks,
+        "delegation_lifecycle": delegation_lifecycle,
         "human_decisions": human,
     }
 
@@ -183,6 +208,26 @@ def _flow_narrative(event: Dict[str, Any]) -> str:
             f"to call `{sink}`. AgentBrake blocked the call before it executed."
         )
     return f"A forbidden flow into `{sink}` was blocked before it executed."
+
+
+def _delegation_narrative(event: Dict[str, Any]) -> str:
+    """One plain-language sentence describing a blocked delegated action."""
+    d = event.get("delegation") or {}
+    delegatee = d.get("delegatee") or "the delegated agent"
+    delegator = d.get("delegator") or "another agent"
+    tool = event.get("tool") or "a tool"
+    scope = ", ".join(f"`{t}`" for t in (d.get("allowed_tools") or [])) or "(empty)"
+    if d.get("violation") == "expired":
+        return (
+            f"Agent `{delegatee}` attempted `{tool}` after its delegated mandate "
+            f"from `{delegator}` had expired. AgentBrake blocked the call before "
+            "it executed."
+        )
+    return (
+        f"Agent `{delegatee}`, acting under a delegation from `{delegator}`, "
+        f"attempted `{tool}` — outside its delegated scope ({scope}). "
+        "AgentBrake blocked the call before it executed."
+    )
 
 
 def render_markdown(report: Dict[str, Any]) -> str:
@@ -261,19 +306,49 @@ def render_markdown(report: Dict[str, Any]) -> str:
         out("")
 
     # --- blocked attacks ---
-    if report["flow_blocks"]:
+    if report["flow_blocks"] or report["delegation_blocks"]:
         out("## Attacks blocked automatically")
         out("")
-        for event in report["flow_blocks"]:
+        for event in report["flow_blocks"] + report["delegation_blocks"]:
             out(f"### {_fmt_when(event['when'])} — `{event['tool']}` blocked")
             out("")
-            out(_flow_narrative(event))
+            narrative = (
+                _delegation_narrative(event)
+                if event["kind"] == "delegation_block"
+                else _flow_narrative(event)
+            )
+            out(narrative)
             out("")
             if event.get("run_id"):
                 agent = f", agent `{event['agent_id']}`" if event.get("agent_id") else ""
                 out(f"- Run: `{event['run_id']}`{agent}")
             out(f"- Evidence: {_fmt_ref(event['evidence'])}")
             out("")
+
+    # --- delegation lifecycle ---
+    if report["delegation_lifecycle"]:
+        out("## Delegation activity")
+        out("")
+        out(
+            "Signed delegation tokens carry the user's original intent across "
+            "agents; each grant/acceptance below embeds the full token in its "
+            "receipt, re-verified by `agentbrake verify` (`delegation_tokens` check)."
+        )
+        out("")
+        out("| When | Event | From -> To | Delegated scope | Evidence |")
+        out("|---|---|---|---|---|")
+        for event in report["delegation_lifecycle"]:
+            d = event.get("delegation") or {}
+            label = event["kind"].replace("delegation_", "")
+            scope = ", ".join(f"`{t}`" for t in (d.get("allowed_tools") or [])) or "-"
+            out(
+                f"| {_fmt_when(event['when'])} "
+                f"| {label} "
+                f"| `{d.get('delegator')}` -> `{d.get('delegatee')}` "
+                f"| {scope} "
+                f"| {_fmt_ref(event['evidence'])} |"
+            )
+        out("")
 
     # --- human decisions ---
     if report["human_decisions"]:
@@ -297,7 +372,12 @@ def render_markdown(report: Dict[str, Any]) -> str:
             )
         out("")
 
-    if not report["flow_blocks"] and not report["human_decisions"]:
+    if not (
+        report["flow_blocks"]
+        or report["delegation_blocks"]
+        or report["delegation_lifecycle"]
+        or report["human_decisions"]
+    ):
         out("_No enforcement events in the covered period._")
         out("")
 

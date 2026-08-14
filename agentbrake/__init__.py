@@ -24,6 +24,7 @@ from .delegation import (
     DelegationError,
     DelegationToken,
     accept as _accept_delegation,
+    record_event as _record_delegation_event,
 )
 from .types import AgentBrakeInterrupt, InterruptReason, RunState, ToolCall
 
@@ -129,13 +130,33 @@ class Run:
             if isinstance(delegation, AcceptedDelegation):
                 accepted = delegation
             elif isinstance(delegation, DelegationToken):
-                accepted = _accept_delegation(delegation)
+                try:
+                    accepted = _accept_delegation(delegation)
+                except DelegationError as e:
+                    # The rejection itself is an enforcement decision — it is
+                    # receipted into this run's ledger before the run dies.
+                    _record_delegation_event(
+                        "delegation_reject",
+                        "reject",
+                        delegation,
+                        ledger=self.flow_ledger,
+                        run_id=self.state.run_id,
+                        extra={"error": str(e)},
+                    )
+                    raise
             else:
                 raise TypeError(
                     "delegation must be a DelegationToken or the result of "
                     "delegation.accept(...)"
                 )
             self.delegation_detector = DelegationDetector(accepted)
+            _record_delegation_event(
+                "delegation_accept",
+                "accept",
+                accepted.token,
+                ledger=self.flow_ledger,
+                run_id=self.state.run_id,
+            )
 
         self.client = AgentBrakeClient(api_url) if mode == "remote" else None
         self._token: Optional[Token] = None
@@ -425,15 +446,29 @@ def guard() -> Callable[[Callable[..., Any]], Callable[..., Any]]:
                     # Skip remaining detectors.
                     break
 
-                # The flow block is now final: mint a signed, hash-chained
-                # receipt — a verifiable proof that this attack was stopped,
-                # here, on this call — and attach it to the interrupt.
+                # The block is now final: mint a signed, hash-chained receipt
+                # — a verifiable proof that this attack was stopped, here, on
+                # this call — and attach it to the interrupt.
                 if reason is InterruptReason.FLOW and active.flow_detector is not None:
                     row = receipts.mint_flow_receipt(
                         active.flow_ledger,
                         run_state=active.state,
                         sink_call=call,
                         flow=context["flow"],
+                    )
+                    context["receipt"] = receipts.receipt_summary(row)
+                if (
+                    reason is InterruptReason.DELEGATION
+                    and active.delegation_detector is not None
+                ):
+                    row = _record_delegation_event(
+                        "delegation_block",
+                        "block",
+                        active.delegation_detector.token,
+                        ledger=active.flow_ledger,
+                        run_id=active.state.run_id,
+                        tool=name,
+                        extra={"violation": context["delegation"]["violation"]},
                     )
                     context["receipt"] = receipts.receipt_summary(row)
 

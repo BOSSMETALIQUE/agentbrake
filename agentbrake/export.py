@@ -329,6 +329,49 @@ def verify_export(
         f"chain_id={chain_id}",
     )
 
+    # Deep check: delegation receipts embed the full signed token links, so
+    # the tokens themselves are re-verified here — signatures, identity chain,
+    # parent binding, scope monotonicity, intent invariance. Expiry is NOT
+    # re-checked: it is enforced (and receipted) at use time, and any token in
+    # an old export is expected to have expired since.
+    delegation_entries = []
+    for entry in entries:
+        try:
+            att = json.loads(entry["attestation_json"])
+        except (KeyError, json.JSONDecodeError):
+            continue
+        if str(att.get("kind") or "").startswith("delegation") and (
+            (att.get("delegation") or {}).get("links")
+        ):
+            delegation_entries.append((entry["seq"], att))
+    if delegation_entries:
+        from agentbrake import delegation as delegation_mod
+
+        deep_ok = True
+        deep_detail = (
+            f"{len(delegation_entries)} embedded token chain(s) re-verified "
+            "(expiry is judged at use time, not audit time)"
+        )
+        for seq, att in delegation_entries:
+            try:
+                token = delegation_mod.DelegationToken(att["delegation"]["links"])
+            except delegation_mod.DelegationError as e:
+                deep_ok, deep_detail = False, f"receipt #{seq}: embedded token unreadable ({e})"
+                break
+            token_report = delegation_mod.verify(token, public_keys=public_keys)
+            failed = [
+                c for c in token_report["checks"]
+                if not c["ok"] and c["name"] != "not_expired"
+            ]
+            if failed:
+                deep_ok = False
+                deep_detail = (
+                    f"receipt #{seq}: embedded token failed {failed[0]['name']} "
+                    f"({failed[0]['detail']})"
+                )
+                break
+        check("delegation_tokens", deep_ok, deep_detail)
+
     if consistent_with is not None:
         old_statement = (consistent_with.get("head") or {}).get("statement") or {}
         old_signature = (consistent_with.get("head") or {}).get("signature")
