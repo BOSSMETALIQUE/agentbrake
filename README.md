@@ -10,7 +10,7 @@
 
 > 🇪🇺 **EU AI Act — August 2, 2026.** High-risk system obligations are now enforceable, with penalties up to 7% of global turnover. Auditors expect *demonstrable* runtime controls — not written policies. AgentBrake produces cryptographic proof of every enforcement decision, verifiable offline by a third party with only the public key. See [Security coverage](#security-coverage---owasp-top-10-for-agentic-applications-2026).
 
-> **⚡ Status:** v0.1.0 — Local mode is stable (123/123 tests passing). Remote mode is secured with split SDK/approver secrets, and every decision — human *and* autonomous flow blocks — produces a **signed, hash-chained receipt** that a third party can verify offline with the standalone `agentbrake verify` CLI (see [Verifiable receipts](#verifiable-receipts)). A **flow-control engine with taint tracking** stops prompt-injection → exfiltration (see [Flow control](#flow-control-taint-tracking)). PyPI release coming soon. Looking for early users to validate the API.
+> **⚡ Status:** v0.2.3 — On PyPI (`pip install py-agentbrake`). Local mode is stable (193/193 tests passing). Every enforcement decision — human approvals, autonomous flow blocks, and delegation violations — produces a **signed, hash-chained receipt** a third party verifies offline with the standalone `agentbrake verify` CLI (see [Verifiable receipts](#verifiable-receipts)). A **flow-control engine with taint tracking** stops prompt-injection → exfiltration (see [Flow control](#flow-control-taint-tracking)), and **signed delegation tokens** carry the original user intent across agent hops (see [Delegation](#delegation-inter-agent-trust)). Looking for early users to validate the API.
 
 ## The problem
 
@@ -21,8 +21,7 @@ Observability tells you this happened. **AgentBrake stops it from happening.**
 ## Quick start
 
 ```bash
-# Coming soon to PyPI. For now:
-pip install git+https://github.com/BOSSMETALIQUE/agentbrake.git
+pip install py-agentbrake
 ```
 
 ```python
@@ -62,7 +61,7 @@ from agentbrake import AgentBrakeInterrupt
 try:
     agent.run("do the thing")
 except AgentBrakeInterrupt as e:
-    print(f"Stopped: {e.reason}")  # LOOP, BUDGET, or ESCALATION
+    print(f"Stopped: {e.reason}")  # LOOP, BUDGET, ESCALATION, FLOW, or DELEGATION
 ```
 
 ## What it detects
@@ -74,8 +73,9 @@ except AgentBrakeInterrupt as e:
 | **Budget** | Cumulative cost exceeds the configured `budget_usd` ceiling | Long-running agent burns past its $5 cap overnight | Local: raise `AgentBrakeInterrupt(BUDGET)` · Remote: request human validation |
 | **Escalation** | Tool name is not in the configured `allowed_tools` list | Agent tries to call `delete_database` when only `search` and `read_file` are allowed | Local: raise `AgentBrakeInterrupt(ESCALATION)` · Remote: request human validation |
 | **Flow** | An allow-listed tool is called in a forbidden *sequence* — e.g. an egress sink after the run was tainted by untrusted input | Agent reads an attacker-controlled page, then tries to `send_email` the data out | Local: raise `AgentBrakeInterrupt(FLOW)` + mint a [signed receipt](#verifiable-receipts) · Remote: request human validation |
+| **Delegation** | A tool call outside the scope of the [signed grant](#delegation-inter-agent-trust) the agent is acting under, or an expired / invalid token | A finance agent, delegated only `issue_refund`, reaches for `send_email` | Local: raise `AgentBrakeInterrupt(DELEGATION)` + mint a signed receipt · Remote: request human validation |
 
-The first four detectors are active out of the box. **Flow** is opt-in: it only runs once you give the run a `flow_policy` (see below), because only you know which of your tools read untrusted data and which send data out.
+The first four detectors are active out of the box. **Flow** and **Delegation** are opt-in: they only run once you give the run a `flow_policy` or a `delegation` token, because only you know which of your tools read untrusted data, which send data out, and which agent is acting on whose behalf.
 
 ## Flow control (taint tracking)
 
@@ -157,11 +157,11 @@ Flow control is a strong, cheap layer — not a sandbox. Its guarantees are hone
 
 ## How it works
 
-The `@guard()` decorator wraps your tool-dispatch function and keeps a per-run `RunState` (run id, total cost, full call history, active taints). Every call passes through the active detectors in order — escalation → flow → loop → retry-storm → budget — and any hit raises `AgentBrakeInterrupt` *before* the underlying tool runs. Loop detection uses a SHA-256 hash over the JSON-sorted `(name, args)` payload, so argument ordering doesn't fool it.
+The `@guard()` decorator wraps your tool-dispatch function and keeps a per-run `RunState` (run id, total cost, full call history, active taints, active delegation). Every call passes through the active detectors in order — delegation → escalation → flow → loop → retry-storm → budget — and any hit raises `AgentBrakeInterrupt` *before* the underlying tool runs. Loop detection uses a SHA-256 hash over the JSON-sorted `(name, args)` payload, so argument ordering doesn't fool it.
 
 Every attempt is recorded **before** the tool executes (outcome `pending` → `ok` or `error`), so calls that raise still count toward loop detection and budget — an agent retrying the same failing call 50 times gets stopped just like one retrying a succeeding call.
 
-Local mode is zero-config and runs entirely in-process. A remote mode (backend + human-in-the-loop validation UI) is on the roadmap.
+Local mode is zero-config and runs entirely in-process. Remote mode adds a backend and a human-in-the-loop validation UI.
 
 ## Architecture
 
@@ -170,7 +170,7 @@ AgentBrake ships in two modes — **local** (zero-config, in-process) and **remo
 ```mermaid
 flowchart TD
     A["User's Agent<br/>(LangGraph, raw SDK, ...)"] -->|tool call| B["AgentBrake @guard()"]
-    B --> C{"Detectors<br/>escalation · loop · budget"}
+    B --> C{"Detectors<br/>delegation · escalation · flow · loop · budget"}
     C -->|safe| D["Tool executes"]
     C -->|trip · local mode| E["raise AgentBrakeInterrupt"]
     C -->|trip · remote mode| F["POST /interrupts"]
@@ -194,15 +194,17 @@ The SDK is the only piece you import. In local mode (default), it raises on dete
 ## Roadmap
 
 - [x] Local mode SDK (loops, retry storms, budget, escalation)
-- [x] Flow control / taint tracking (prompt-injection → exfiltration)
-- [ ] LangChain integration examples
+- [x] Flow control / taint tracking (prompt-injection → exfiltration) — ASI01
 - [x] FastAPI backend with dynamic validation UI
-- [x] Signed, hash-chained attestations (verifiable receipts) — human decisions **and** flow blocks
+- [x] Signed, hash-chained attestations (verifiable receipts) — human decisions **and** autonomous blocks
 - [x] Third-party verification: Ed25519 receipts, export bundles, standalone `agentbrake verify` CLI
 - [x] RFC 6962 Merkle log: signed tree root, cross-export consistency, single-receipt inclusion proofs
 - [x] Compliance report: auditor-readable Markdown generated from a verified bundle (`agentbrake report`)
+- [x] Signed delegation tokens: user intent carried across agent hops, monotonic scope narrowing — ASI03
+- [x] PyPI release
+- [ ] Signed memory entries — ASI06
+- [ ] LangChain / LangGraph integration examples
 - [ ] Slack / webhook integration for human-in-the-loop
-- [ ] PyPI release
 
 ## Remote mode (human-in-the-loop)
 
@@ -260,7 +262,7 @@ AgentBrake closes this with a privilege split:
 
 ## Verifiable receipts
 
-Stopping an agent is enforcement. *Proving* what was decided — on what information, at what time — is accountability. Every decision produces a **signed, tamper-evident attestation**: a receipt a third party can verify **without trusting your server**. This covers both a human approve/kill in remote mode **and** an autonomous [flow block](#flow-control-taint-tracking) in local mode — same format, same signing key, same verifier.
+Stopping an agent is enforcement. *Proving* what was decided — on what information, at what time — is accountability. Every decision produces a **signed, tamper-evident attestation**: a receipt a third party can verify **without trusting your server**. This covers a human approve/kill in remote mode, an autonomous [flow block](#flow-control-taint-tracking), and a [delegation violation](#delegation-inter-agent-trust) — same format, same signing key, same verifier.
 
 When a human decides, the server mints an attestation and appends it to a hash-chained log:
 
@@ -335,7 +337,7 @@ agentbrake report receipts_export.json -o compliance_report.md \
     --public-key <hex> --from 2026-07-01 --to 2026-07-31
 ```
 
-The generated Markdown document contains an executive summary (attacks blocked automatically, runs stopped by a human, interrupts reviewed and approved, human response times), a plain-language narrative for each blocked attack — *"the agent ingested untrusted content via `read_webpage` (call #0), then attempted to call `send_email`; AgentBrake blocked the call before it executed"* — a table of human decisions, and an evidence appendix referencing each event's signed receipt with the exact commands to re-verify it independently.
+The generated Markdown document contains an executive summary (attacks blocked automatically, runs stopped by a human, interrupts reviewed and approved, human response times), a plain-language narrative for each blocked attack — *"the agent ingested untrusted content via `read_webpage` (call #0), then attempted to call `send_email`; AgentBrake blocked the call before it executed"* — a table of human decisions, a delegation activity section, and an evidence appendix referencing each event's signed receipt with the exact commands to re-verify it independently.
 
 Two properties keep the report honest. It is generated **from the export bundle, never from the raw database**, and the bundle is cryptographically verified first — the verdict leads the document, and a failed verification produces a prominent warning banner instead of quietly reporting on untrusted data (the CLI also exits non-zero). And the report ends with the same scope-and-limits statement the verifier prints: what the evidence proves, and what it does not.
 
@@ -354,9 +356,9 @@ The verifier prints this trust model with every run; here it is in full:
 - **In local mode, the private key lives in the agent's process.** A fully compromised agent process could read the key and forge receipts. For adversarial-grade proof, sign on a separate trusted host (remote mode) or ship receipts off-box as they are minted.
 - The receipt binds the decision to *what the SDK reported*. It proves the enforcement decision and its inputs — not ground truth about everything the agent did outside the guarded dispatch.
 
-### Receipts for autonomous flow blocks
+### Receipts for autonomous blocks
 
-A [flow block](#flow-control-taint-tracking) happens in-process, with no server and no human in the loop — but it still mints a receipt, using the *same* canonical-JSON / Ed25519 / hash-chain primitives and the same signing key. The attestation records `decision: "block"`, `kind: "flow_block"`, and the flow that was stopped (offending sink, violated taints, the call that introduced each taint). Only the storage differs: instead of the server's SQLite chain, each run keeps a pluggable **ledger**.
+A [flow block](#flow-control-taint-tracking) or a [delegation violation](#delegation-inter-agent-trust) happens in-process, with no server and no human in the loop — but it still mints a receipt, using the *same* canonical-JSON / Ed25519 / hash-chain primitives and the same signing key. The attestation records `decision: "block"`, a `kind` naming what tripped, and the details of what was stopped. Only the storage differs: instead of the server's SQLite chain, each run keeps a pluggable **ledger**.
 
 ```python
 with agentbrake.run(flow_policy=policy) as r:
@@ -392,6 +394,65 @@ These read-only endpoints are unauthenticated by design (they expose digests and
 
 Set a persistent signing key (`agentbrake keygen`, then `AGENTBRAKE_SIGNING_KEY_FILE=…` or `AGENTBRAKE_SIGNING_SEED=…`) so receipts stay verifiable across restarts; an unset key is generated per-process and printed on the server's own console.
 
+## Delegation (inter-agent trust)
+
+An allow-list answers *"may this agent call this tool?"*. A [flow policy](#flow-control-taint-tracking) answers *"may it call this tool given what it has already read?"*. Neither answers the third question — *"is this agent acting on a request a user actually made?"* — and that is where **ASI03 (Agent Identity & Privilege Abuse)** lives:
+
+> A low-privilege support agent hands a "request" to a high-privilege finance agent. The finance agent trusts the internal call and issues the refund without ever re-checking what the user originally asked for. No individual permission was violated. The *authority* was laundered across the hop.
+
+Agents inherit privileges from a human, delegate to other agents, and retain or widen those privileges along the way — with nothing binding the chain back to the original request. AgentBrake closes that gap with **signed delegation tokens**: a token cryptographically binds the delegator, the delegatee, a digest of the original user intent, the delegated tool subset, and an expiry. It is signed under a dedicated domain, so a token signature can never be replayed as a receipt signature, or the reverse.
+
+```python
+from agentbrake import delegation
+
+token = delegation.grant(
+    delegator="support-agent",
+    delegatee="finance-agent",
+    intent="Refund order #4521 for jane@corp.com",
+    tools=["lookup_order", "issue_refund"],
+    ttl_seconds=300,
+)
+
+with agentbrake.run(delegation=token) as r:
+    dispatch("issue_refund", {...})   # in scope — proceeds
+    dispatch("send_email", {...})     # AgentBrakeInterrupt(DELEGATION) + signed receipt
+```
+
+The delegated scope intersects with the run's own allow-list, and the delegation detector runs **before** every other check. Without `delegation=`, behaviour is strictly unchanged — this is opt-in.
+
+Sub-delegation is first-class. A delegatee can pass a *narrower* grant onward, and the chain stays verifiable end to end:
+
+```python
+sub = delegation.grant(
+    delegator="finance-agent",
+    delegatee="payment-bot",
+    tools=["issue_refund"],   # must be a subset of the parent — ValueError otherwise
+    parent=token,             # inherits the original intent digest
+    ttl_seconds=60,
+)
+```
+
+**Four invariants hold across any chain**, checked on issue *and* re-checked on acceptance — so a token forged outside this code is rejected exactly like one `grant()` refuses to build:
+
+1. **Every signature verifies** under the delegator's key.
+2. **The chain is contiguous** — each hop's delegatee is the next hop's delegator, and each token commits to the digest of its parent.
+3. **Scope only narrows** — `tools[i+1] ⊆ tools[i]`. Privilege can be given away, never gained.
+4. **The intent digest is identical at every hop** — the original request cannot be rewritten in transit. This is the invariant that actually closes ASI03.
+
+Effective expiry is the minimum across the chain, and the TTL is re-checked on *every* call, not just at acceptance — a long-running agent whose grant expires mid-run is stopped at the next tool call.
+
+Every grant, acceptance, and violation mints a signed receipt into the **same hash-chained ledger** as flow blocks — same export bundle, same `agentbrake verify` CLI, same compliance report. Verification is *deep*: the verifier re-checks the signature of the token embedded inside each receipt, not merely the receipt wrapping it. An auditor can therefore confirm, offline, that a blocked call was blocked *because* it exceeded a delegation a specific agent actually signed.
+
+### Limitations (read these)
+
+Same standard as everywhere else in AgentBrake — here is what this does not prove:
+
+- **Identity binding requires pinning.** Without a pinned directory, a token proves *"signed by the holder of key X, who claims to be `support-agent`"* — not that the key belongs to that agent. Pass `trusted_agents={"support-agent": pub_hex}` to `delegation.verify()`; only then is impersonation ruled out.
+- **The user's intent is attested by the root agent, not signed by the user.** The token freezes what the root agent declared. A compromised root agent can declare a false intent. Client-signed intent would close this, and is future work.
+- **Scope is tool names, not arguments.** *"May refund up to €100"* is not expressible yet — only *"may call `issue_refund`"*. Argument-level constraints are future work.
+- **TTLs run on the local clock**, self-reported like every other timestamp in AgentBrake.
+- **Same-process key exposure applies**, exactly as documented for local-mode receipts: a fully compromised agent process can read the signing key and forge grants.
+
 ## Why AgentBrake vs LangSmith / Helicone / AgentOps
 
 Those tools are **observability** — they show you, after the fact, that your agent looped or overspent. AgentBrake is **enforcement** — it interrupts the agent mid-run, before the damage. The two are complementary: keep your dashboards, add a brake pedal.
@@ -421,24 +482,24 @@ We don't compete with these — we complement them. Run AgentBrake as your last 
 
 ## Security coverage - OWASP Top 10 for Agentic Applications (2026)
 
-AgentBrake maps to the [OWASP Top 10 for Agentic Applications (2026)](https://genai.owasp.org/resource/owasp-top-10-for-agentic-applications-for-2026/) - the peer-reviewed risk taxonomy security teams now use to evaluate agent deployments. Every enforcement decision AgentBrake makes produces an **Ed25519-signed, hash-chained receipt** that a third party (an auditor, a client's security team) can verify **offline with only the public key** - no trust in the AgentBrake server required.
+AgentBrake maps to the [OWASP Top 10 for Agentic Applications (2026)](https://genai.owasp.org/resource/owasp-top-10-for-agentic-applications-for-2026/) — the peer-reviewed risk taxonomy security teams now use to evaluate agent deployments. Every enforcement decision AgentBrake makes produces an **Ed25519-signed, hash-chained receipt** that a third party (an auditor, a client's security team) can verify **offline with only the public key** — no trust in the AgentBrake server required.
 
 | OWASP | Risk | AgentBrake |
 |-------|------|------------|
-| **ASI02** | Tool Misuse | Tool allow-list + loop / retry-storm detection stop recursive tool abuse. |
-| **ASI01** | Agent Goal Hijack | Flow-control engine (taint tracking) blocks injection to exfiltration. |
-| **ASI08** | Cascading Failures | Circuit-breaker halt-and-escalate before a failure snowballs. |
-| **ASI10** | Rogue Agents | Verifiable audit trail for post-incident forensics. |
-| **ASI03** | Identity Abuse | Roadmap - signed delegation. Ed25519 foundation ready. |
-| **ASI06** | Memory Poisoning | Roadmap - signed memory entries. |
+| **ASI01** | Agent Goal Hijack | [Flow-control engine](#flow-control-taint-tracking) with taint tracking blocks the indirect-injection → exfiltration path before the egress call executes. |
+| **ASI02** | Tool Misuse & Exploitation | Tool allow-list plus loop and retry-storm detection stop recursive tool abuse and unsafe call compositions. |
+| **ASI03** | Identity & Privilege Abuse | [Signed delegation tokens](#delegation-inter-agent-trust) bind the original user intent, a narrowing tool subset, and a TTL to every A→B→C hop. Authority cannot be laundered across an internal call. |
+| **ASI08** | Cascading Agent Failures | Circuit-breaker halt-and-escalate: budget and loop limits are hard stops that break the chain before one failure snowballs across steps. |
+| **ASI10** | Rogue Agents | [Verifiable audit trail](#verifiable-receipts) gives post-incident forensics a tamper-evident record of tool calls, autonomous blocks, and human approvals. |
+| **ASI06** | Memory & Context Poisoning | Roadmap — signed memory entries so agents can weight or ignore unattributed writes. |
 
-**Not in scope (by design):** AgentBrake enforces *actions*, not *content*. Use it alongside text-filtering guardrails.
+**Not in scope (by design):** AgentBrake enforces *actions* — tool calls, budgets, flows, delegated authority — not *content*. Input/output text filtering (PII redaction, toxicity, jailbreak-string detection) is handled better by dedicated guardrail libraries. Run AgentBrake **alongside** them: they inspect the text, AgentBrake governs and proves the actions.
 
 ### Why this matters now
 
-- **EU AI Act high-risk obligations live since August 2, 2026.** Penalties up to 7% of global turnover.
-- **OWASP published a dedicated Top 10 for Agentic Applications** (Dec 2025).
-- **Auditors want evidence.** AgentBrake produces that record and makes it independently verifiable.
+- **Regulatory enforcement is live.** EU AI Act high-risk obligations apply from August 2, 2026, with penalties up to 7% of global turnover. Auditors now expect *demonstrable* runtime controls, not written policy.
+- **The attack surface is agent-shaped.** OWASP published a dedicated Top 10 for Agentic Applications in December 2025, covering risks that only exist once a system can plan, hold memory, call tools, and act with delegated authority.
+- **Auditors want evidence.** Under NIST AI RMF and ISO 42001, an incident an agent took part in can't be investigated without a record spanning its tool calls, identity context, and decisions. AgentBrake produces exactly that record — and makes it independently verifiable.
 
 ---
 
