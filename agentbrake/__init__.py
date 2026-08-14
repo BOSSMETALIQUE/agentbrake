@@ -17,7 +17,14 @@ from .detectors import (
     cost_from_tokens,
 )
 from .flow import FlowPolicy, FlowRuleDetector, block_exfiltration
-from . import receipts, signing
+from . import delegation, receipts, signing
+from .delegation import (
+    AcceptedDelegation,
+    DelegationDetector,
+    DelegationError,
+    DelegationToken,
+    accept as _accept_delegation,
+)
 from .types import AgentBrakeInterrupt, InterruptReason, RunState, ToolCall
 
 __version__ = "0.1.0"
@@ -42,6 +49,8 @@ __all__ = [
     "block_exfiltration",
     "receipts",
     "signing",
+    "delegation",
+    "DelegationError",
     "__version__",
 ]
 
@@ -77,6 +86,7 @@ class Run:
         retry_progress_aware: bool = True,
         flow_policy: Optional[FlowPolicy] = None,
         receipts_path: Optional[str] = None,
+        delegation: Optional[object] = None,
     ):
         if mode not in {"local", "remote"}:
             raise ValueError("mode must be 'local' or 'remote'")
@@ -107,6 +117,26 @@ class Run:
             else receipts.InMemoryLedger()
         )
         self.state = RunState()
+
+        # Delegation is opt-in and deliberately NOT inherited from init():
+        # a token authorizes one task, and silently reusing it across runs
+        # would defeat its TTL and scope. Accepting a raw token verifies it
+        # with default trust (same-process signer); for tokens from another
+        # process, call delegation.accept(token, trusted_agents=...) yourself
+        # and pass the result. An invalid token fails the run right here.
+        self.delegation_detector: Optional[DelegationDetector] = None
+        if delegation is not None:
+            if isinstance(delegation, AcceptedDelegation):
+                accepted = delegation
+            elif isinstance(delegation, DelegationToken):
+                accepted = _accept_delegation(delegation)
+            else:
+                raise TypeError(
+                    "delegation must be a DelegationToken or the result of "
+                    "delegation.accept(...)"
+                )
+            self.delegation_detector = DelegationDetector(accepted)
+
         self.client = AgentBrakeClient(api_url) if mode == "remote" else None
         self._token: Optional[Token] = None
 
@@ -199,6 +229,7 @@ def run(
     retry_progress_aware: Optional[bool] = None,
     flow_policy: Optional[FlowPolicy] = None,
     receipts_path: Optional[str] = None,
+    delegation: Optional[object] = None,
 ) -> Run:
     """Create an isolated Run; use it as a context manager.
 
@@ -251,6 +282,8 @@ def run(
             if receipts_path is not None
             else (base.receipts_path if base else None)
         ),
+        # Deliberately not inherited from init(): a token authorizes one task.
+        delegation=delegation,
     )
 
 
@@ -354,10 +387,15 @@ def guard() -> Callable[[Callable[..., Any]], Callable[..., Any]]:
 
             call = ToolCall(name=name, args=args or {}, cost_usd=_FIXED_COST_PER_CALL_USD)
 
-            # Flow runs right after escalation: a forbidden *sequence* is a
-            # security event, checked before the cheaper loop/cost heuristics.
-            # The flow detector is only present when a flow_policy was set.
-            detectors = [active.escalation_detector]
+            # Delegation runs first — identity and mandate precede everything
+            # else. Flow runs right after escalation: a forbidden *sequence*
+            # is a security event, checked before the cheaper loop/cost
+            # heuristics. Delegation/flow detectors are only present when a
+            # token / flow_policy was given.
+            detectors = []
+            if active.delegation_detector is not None:
+                detectors.append(active.delegation_detector)
+            detectors.append(active.escalation_detector)
             if active.flow_detector is not None:
                 detectors.append(active.flow_detector)
             detectors += [
@@ -374,6 +412,11 @@ def guard() -> Callable[[Callable[..., Any]], Callable[..., Any]]:
                 context = _build_context(active, name)
                 if reason is InterruptReason.FLOW and active.flow_detector is not None:
                     context["flow"] = active.flow_detector.explain(active.state, call)
+                if (
+                    reason is InterruptReason.DELEGATION
+                    and active.delegation_detector is not None
+                ):
+                    context["delegation"] = active.delegation_detector.explain(call)
 
                 if active.mode == "remote" and _handle_remote_interrupt(
                     active, reason, context

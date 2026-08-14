@@ -65,6 +65,7 @@ ALG_HMAC_SHA256 = "hmac-sha256"
 # Domain-separation prefixes: a signature is bound to exactly one context.
 DOMAIN_ATTESTATION_V2 = b"agentbrake.attestation.v2\n"
 DOMAIN_CHAIN_HEAD_V1 = b"agentbrake.chain-head.v1\n"
+DOMAIN_DELEGATION_V1 = b"agentbrake.delegation.v1\n"
 
 # Environment configuration, resolved by callers (see attest._resolve_signer):
 #   AGENTBRAKE_SIGNING_KEY_FILE — path to an Ed25519 private key in PEM form.

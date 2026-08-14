@@ -16,6 +16,7 @@ class InterruptReason(str, Enum):
     ESCALATION = "escalation"
     TIMEOUT = "timeout"
     FLOW = "flow"
+    DELEGATION = "delegation"
 
 
 class TaintMark(BaseModel):
