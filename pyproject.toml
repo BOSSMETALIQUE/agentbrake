@@ -29,6 +29,11 @@ dev = [
     "fastapi>=0.110",
     "jinja2>=3.1",
 ]
+# OpenAI-compatible client for the CometAPI provider
+# (agentbrake.providers.cometapi). The core never imports it.
+cometapi = [
+    "openai>=1.0",
+]
 
 [tool.setuptools.packages.find]
 include = ["agentbrake*"]

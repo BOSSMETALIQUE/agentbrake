@@ -10,7 +10,7 @@
 
 > 🇪🇺 **EU AI Act — August 2, 2026.** High-risk system obligations are now enforceable, with penalties up to 7% of global turnover. Auditors expect *demonstrable* runtime controls — not written policies. AgentBrake produces cryptographic proof of every enforcement decision, verifiable offline by a third party with only the public key. See [Security coverage](#security-coverage---owasp-top-10-for-agentic-applications-2026).
 
-> **⚡ Status:** v0.2.3 — On PyPI (`pip install py-agentbrake`). Local mode is stable (193/193 tests passing). Every enforcement decision — human approvals, autonomous flow blocks, and delegation violations — produces a **signed, hash-chained receipt** a third party verifies offline with the standalone `agentbrake verify` CLI (see [Verifiable receipts](#verifiable-receipts)). A **flow-control engine with taint tracking** stops prompt-injection → exfiltration (see [Flow control](#flow-control-taint-tracking)), and **signed delegation tokens** carry the original user intent across agent hops (see [Delegation](#delegation-inter-agent-trust)). Looking for early users to validate the API.
+> **⚡ Status:** v0.2.4 — On PyPI (`pip install py-agentbrake`). Local mode is stable (211/211 tests passing). Every enforcement decision — human approvals, autonomous flow blocks, and delegation violations — produces a **signed, hash-chained receipt** a third party verifies offline with the standalone `agentbrake verify` CLI (see [Verifiable receipts](#verifiable-receipts)). A **flow-control engine with taint tracking** stops prompt-injection → exfiltration (see [Flow control](#flow-control-taint-tracking)), and **signed delegation tokens** carry the original user intent across agent hops (see [Delegation](#delegation-inter-agent-trust)). Looking for early users to validate the API.
 
 ## The problem
 
@@ -76,6 +76,29 @@ except AgentBrakeInterrupt as e:
 | **Delegation** | A tool call outside the scope of the [signed grant](#delegation-inter-agent-trust) the agent is acting under, or an expired / invalid token | A finance agent, delegated only `issue_refund`, reaches for `send_email` | Local: raise `AgentBrakeInterrupt(DELEGATION)` + mint a signed receipt · Remote: request human validation |
 
 The first four detectors are active out of the box. **Flow** and **Delegation** are opt-in: they only run once you give the run a `flow_policy` or a `delegation` token, because only you know which of your tools read untrusted data, which send data out, and which agent is acting on whose behalf.
+
+## Real LLM cost tracking (CometAPI)
+
+Out of the box, guarded tool calls are priced at a flat $0.01 and `cost_from_tokens(model, input_tokens, output_tokens)` is exported for pricing calls by hand. The [CometAPI](https://www.cometapi.com) provider makes the real thing automatic: CometAPI is an OpenAI-compatible gateway to 500+ models behind one endpoint, its responses carry token usage, and the provider feeds the resulting spend straight into the active run's `BudgetDetector`.
+
+```bash
+pip install py-agentbrake[cometapi]     # pulls the openai client
+export COMETAPI_KEY=sk-...              # never hardcode the key
+```
+
+```python
+import agentbrake
+from agentbrake.providers import cometapi
+
+agentbrake.init(budget_usd=5.0)
+
+result = cometapi.complete("gpt-4o", [{"role": "user", "content": "hi"}])
+print(result.cost_usd)  # priced from real token usage, already counted against the budget
+```
+
+That's the whole integration: when the cumulative spend crosses `budget_usd`, the next `complete()` raises `AgentBrakeInterrupt(BUDGET)`. Making the API call yourself? `cometapi.track(response, model)` extracts and prices the usage without touching your control flow, and `cometapi.record(result)` pushes it into the active run. The core never imports the provider — skip the extra and nothing changes.
+
+Honest limits: the USD figure is an **estimate** from the `PRICING` table in `agentbrake.detectors` (unknown models fall back to `DEFAULT_PRICING`, never $0) — what CometAPI actually bills can differ. A response without a `usage` block is recorded at $0.00 rather than guessed. And because an LLM call's cost is only known *after* the tokens are spent, the budget interrupt fires right after the offending call, not before it — overshoot is bounded by one call. See [`examples/07_cometapi_cost_tracking.py`](examples/07_cometapi_cost_tracking.py) for a runnable demo.
 
 ## Flow control (taint tracking)
 
@@ -202,6 +225,7 @@ The SDK is the only piece you import. In local mode (default), it raises on dete
 - [x] Compliance report: auditor-readable Markdown generated from a verified bundle (`agentbrake report`)
 - [x] Signed delegation tokens: user intent carried across agent hops, monotonic scope narrowing — ASI03
 - [x] PyPI release
+- [x] CometAPI provider: real token-based LLM cost tracking (500+ models, one endpoint)
 - [ ] Signed memory entries — ASI06
 - [ ] LangChain / LangGraph integration examples
 - [ ] Slack / webhook integration for human-in-the-loop
