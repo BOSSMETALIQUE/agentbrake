@@ -32,6 +32,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Protocol, Tuple
 
 from agentbrake.server import attest
+
 from .types import RunState, ToolCall
 
 # Re-export so callers verify receipts without importing the server package.

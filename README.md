@@ -10,7 +10,7 @@
 
 > 🇪🇺 **EU AI Act — August 2, 2026.** High-risk system obligations are now enforceable, with penalties up to 7% of global turnover. Auditors expect *demonstrable* runtime controls — not written policies. AgentBrake produces cryptographic proof of every enforcement decision, verifiable offline by a third party with only the public key. See [Security coverage](#security-coverage---owasp-top-10-for-agentic-applications-2026).
 
-> **⚡ Status:** v0.2.4 — On PyPI (`pip install py-agentbrake`). Local mode is stable (211/211 tests passing). Every enforcement decision — human approvals, autonomous flow blocks, and delegation violations — produces a **signed, hash-chained receipt** a third party verifies offline with the standalone `agentbrake verify` CLI (see [Verifiable receipts](#verifiable-receipts)). A **flow-control engine with taint tracking** stops prompt-injection → exfiltration (see [Flow control](#flow-control-taint-tracking)), and **signed delegation tokens** carry the original user intent across agent hops (see [Delegation](#delegation-inter-agent-trust)). Looking for early users to validate the API.
+> **⚡ Status:** v0.3.0 — On PyPI (`pip install py-agentbrake`). Local mode is stable (211/211 tests passing). Every enforcement decision — human approvals, autonomous flow blocks, and delegation violations — produces a **signed, hash-chained receipt** a third party verifies offline with the standalone `agentbrake verify` CLI (see [Verifiable receipts](#verifiable-receipts)). A **flow-control engine with taint tracking** stops prompt-injection → exfiltration (see [Flow control](#flow-control-taint-tracking)), and **signed delegation tokens** carry the original user intent across agent hops (see [Delegation](#delegation-inter-agent-trust)). Looking for early users to validate the API.
 
 ## The problem
 
@@ -250,6 +250,8 @@ uvicorn agentbrake.server.main:app --reload --port 8000
 
 The backend stores interrupts in a SQLite file named `agentbrake.db` in the directory you launch it from. Set `AGENTBRAKE_DB` to use a different path.
 
+**Single-process only.** The receipt chain is serialized with an in-process lock (`threading.Lock`), so concurrent decisions never fork the chain or collide on a sequence number *within one server process*. That lock does not extend across processes: running `uvicorn --workers 2` (or multiple replicas) against the same `agentbrake.db` is not supported and can corrupt the chain's sequencing. Run exactly one worker per database.
+
 Point the SDK at it — the SDK only needs the **SDK secret**:
 
 ```python
@@ -482,6 +484,8 @@ Same standard as everywhere else in AgentBrake — here is what this does not pr
 Those tools are **observability** — they show you, after the fact, that your agent looped or overspent. AgentBrake is **enforcement** — it interrupts the agent mid-run, before the damage. The two are complementary: keep your dashboards, add a brake pedal.
 
 ## Development
+
+Full public API surface: [`docs/api-reference.md`](docs/api-reference.md). Runnable demos of every detector: [`examples/README.md`](examples/README.md).
 
 ```bash
 git clone https://github.com/BOSSMETALIQUE/agentbrake.git

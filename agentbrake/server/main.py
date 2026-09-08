@@ -4,10 +4,9 @@ from __future__ import annotations
 
 import json
 import sys
-from pathlib import Path
-from typing import Any, Dict, Optional
-
 from contextlib import asynccontextmanager
+from pathlib import Path
+from typing import Any, Dict, List
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse
@@ -100,7 +99,7 @@ def view_interrupt(interrupt_id: str, request: Request) -> HTMLResponse:
         raise HTTPException(status_code=404, detail="interrupt not found")
 
     ctx = record["context"] or {}
-    calls = []
+    calls: List[Dict[str, Any]] = []
     run_state = ctx.get("run_state") or {}
     if isinstance(run_state, dict):
         calls = run_state.get("calls") or []

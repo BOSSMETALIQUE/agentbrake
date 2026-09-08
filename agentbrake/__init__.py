@@ -8,7 +8,20 @@ import sys
 from contextvars import ContextVar, Token
 from typing import Any, Callable, List, Optional
 
+from . import delegation, receipts, signing
 from .client import AgentBrakeClient
+from .delegation import (
+    AcceptedDelegation,
+    DelegationDetector,
+    DelegationError,
+    DelegationToken,
+)
+from .delegation import (
+    accept as _accept_delegation,
+)
+from .delegation import (
+    record_event as _record_delegation_event,
+)
 from .detectors import (
     BudgetDetector,
     EscalationDetector,
@@ -17,18 +30,9 @@ from .detectors import (
     cost_from_tokens,
 )
 from .flow import FlowPolicy, FlowRuleDetector, block_exfiltration
-from . import delegation, receipts, signing
-from .delegation import (
-    AcceptedDelegation,
-    DelegationDetector,
-    DelegationError,
-    DelegationToken,
-    accept as _accept_delegation,
-    record_event as _record_delegation_event,
-)
 from .types import AgentBrakeInterrupt, InterruptReason, RunState, ToolCall
 
-__version__ = "0.2.4"
+__version__ = "0.3.0"
 
 __all__ = [
     "init",
@@ -190,7 +194,7 @@ class Run:
         self._token = _current_run.set(self)
         return self
 
-    def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> bool:
+    def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
         if self._token is not None:
             _current_run.reset(self._token)
             self._token = None
@@ -198,7 +202,6 @@ class Run:
             self.client.close()
         if self.state.status == "running":
             self.state.status = "completed" if exc_type is None else "failed"
-        return False
 
 
 _current_run: ContextVar[Optional[Run]] = ContextVar(
@@ -413,7 +416,7 @@ def guard() -> Callable[[Callable[..., Any]], Callable[..., Any]]:
             # is a security event, checked before the cheaper loop/cost
             # heuristics. Delegation/flow detectors are only present when a
             # token / flow_policy was given.
-            detectors = []
+            detectors: List[Any] = []
             if active.delegation_detector is not None:
                 detectors.append(active.delegation_detector)
             detectors.append(active.escalation_detector)
@@ -450,18 +453,18 @@ def guard() -> Callable[[Callable[..., Any]], Callable[..., Any]]:
                 # — a verifiable proof that this attack was stopped, here, on
                 # this call — and attach it to the interrupt.
                 if reason is InterruptReason.FLOW and active.flow_detector is not None:
-                    row = receipts.mint_flow_receipt(
+                    flow_row = receipts.mint_flow_receipt(
                         active.flow_ledger,
                         run_state=active.state,
                         sink_call=call,
                         flow=context["flow"],
                     )
-                    context["receipt"] = receipts.receipt_summary(row)
+                    context["receipt"] = receipts.receipt_summary(flow_row)
                 if (
                     reason is InterruptReason.DELEGATION
                     and active.delegation_detector is not None
                 ):
-                    row = _record_delegation_event(
+                    delegation_row = _record_delegation_event(
                         "delegation_block",
                         "block",
                         active.delegation_detector.token,
@@ -470,7 +473,10 @@ def guard() -> Callable[[Callable[..., Any]], Callable[..., Any]]:
                         tool=name,
                         extra={"violation": context["delegation"]["violation"]},
                     )
-                    context["receipt"] = receipts.receipt_summary(row)
+                    # ledger is given explicitly above, so record_event never
+                    # takes its "no active run" branch and always mints.
+                    assert delegation_row is not None
+                    context["receipt"] = receipts.receipt_summary(delegation_row)
 
                 active.state.status = "interrupted"
                 raise AgentBrakeInterrupt(reason, context=context)

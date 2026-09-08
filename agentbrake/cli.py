@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, Optional, Tuple
 
@@ -59,7 +60,8 @@ def _cmd_export(args: argparse.Namespace) -> int:
         rows = export_mod.rows_from_db(args.db)
         source = args.db
 
-    signer, key_source = signing.resolve_signer_from_env()
+    resolved_signer, key_source = signing.resolve_signer_from_env()
+    signer: Optional[signing.Signer] = resolved_signer
     if key_source == "generated":
         # A freshly generated key did not sign these receipts and its head
         # signature would be meaningless to any verifier. Export honest:
@@ -236,7 +238,8 @@ def _cmd_prove(args: argparse.Namespace) -> int:
     else:
         rows = export_mod.rows_from_db(args.db)
 
-    signer, key_source = signing.resolve_signer_from_env()
+    resolved_signer, key_source = signing.resolve_signer_from_env()
+    signer: Optional[signing.Signer] = resolved_signer
     if key_source == "generated":
         signer = None
         print(
@@ -273,9 +276,7 @@ def _cmd_verify_receipt(args: argparse.Namespace) -> int:
 
 # ----- report -------------------------------------------------------------------
 
-def _parse_date(value: str) -> "datetime":
-    from datetime import datetime, timezone
-
+def _parse_date(value: str) -> datetime:
     try:
         parsed = datetime.fromisoformat(value)
     except ValueError as e:

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from typing import Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Optional
 
 from .types import InterruptReason, RunState, ToolCall
 
@@ -36,7 +36,7 @@ def _has_monotonic_numeric_arg(calls: List[ToolCall]) -> bool:
     # keys that are numeric in the very first call are candidates
     candidate_keys = [k for k, v in calls[0].args.items() if _is_number(v)]
     for key in candidate_keys:
-        series = []
+        series: List[Any] = []
         ok = True
         for c in calls:
             v = c.args.get(key, None)

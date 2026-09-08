@@ -63,6 +63,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from uuid import uuid4
 
 from agentbrake import signing
+
 from . import store
 
 ATTESTATION_VERSION = "2"
@@ -322,7 +323,7 @@ def verify_record_signature(
 
     if alg == signing.ALG_ED25519:
         key_id = attestation.get("key_id")
-        public_key = (public_keys or {}).get(key_id)
+        public_key = (public_keys or {}).get(key_id)  # type: ignore[arg-type]
         if public_key is None and SIGNER.alg == signing.ALG_ED25519 and SIGNER.key_id == key_id:
             public_key = SIGNER.public_key_hex()
         if public_key is None:
@@ -428,6 +429,9 @@ def signing_banner() -> str:
         lines.append(f"  Attestation signing: Ed25519 (key_id {SIGNER.key_id})")
         lines.append(f"  Public key (share with auditors): {SIGNER.public_key_hex()}")
         if SIGNER_SOURCE == "generated":
+            # Only Ed25519Signer is ever GENERATED (HmacSigner is legacy/env-only);
+            # the alg check above already guarantees this, spelled out for mypy.
+            assert isinstance(SIGNER, signing.Ed25519Signer)
             lines.append("  Key was GENERATED for this process — persist it or receipts")
             lines.append("  minted now become unverifiable after restart:")
             lines.append(f"      {signing.SIGNING_SEED_ENV}={SIGNER.seed_hex()}")

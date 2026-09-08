@@ -52,12 +52,12 @@ import os
 from pathlib import Path
 from typing import Optional, Protocol, runtime_checkable
 
+from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import (
     Ed25519PrivateKey,
     Ed25519PublicKey,
 )
-from cryptography.exceptions import InvalidSignature
 
 ALG_ED25519 = "ed25519"
 ALG_HMAC_SHA256 = "hmac-sha256"

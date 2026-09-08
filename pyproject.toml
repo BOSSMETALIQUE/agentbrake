@@ -1,13 +1,44 @@
 [build-system]
-requires = ["setuptools>=68", "wheel"]
+requires = ["setuptools>=77", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "py-agentbrake"
-version = "0.2.4"
+dynamic = ["version"]
 description = "Circuit breaker SDK for LLM agents."
 readme = "README.md"
 requires-python = ">=3.9"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [
+    { name = "BOSSMETALIQUE" },
+]
+keywords = [
+    "agents",
+    "ai-safety",
+    "anthropic",
+    "circuit-breaker",
+    "guardrails",
+    "langchain",
+    "llm",
+    "llm-agents",
+    "observability",
+    "openai",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Security",
+    "Typing :: Typed",
+]
 dependencies = [
     "httpx>=0.27",
     "pydantic>=2.0",
@@ -16,18 +47,29 @@ dependencies = [
     "cryptography>=42",
 ]
 
+[project.urls]
+Homepage = "https://bossmetalique.github.io/agentbrake/"
+Repository = "https://github.com/BOSSMETALIQUE/agentbrake"
+Issues = "https://github.com/BOSSMETALIQUE/agentbrake/issues"
+Changelog = "https://github.com/BOSSMETALIQUE/agentbrake/blob/main/CHANGELOG.md"
+
 [project.scripts]
 agentbrake = "agentbrake.cli:main"
 
 [project.optional-dependencies]
-# Everything pytest needs to run the full test suite (detectors + backend).
-# Kept dependency-light so the CI matrix can include Python 3.9, which
-# langchain 1.x / langgraph drop. Heavy example-only deps live in
+# Everything CI needs to test, lint, type-check, measure coverage, and build
+# the package. Kept dependency-light so the test matrix can include Python
+# 3.9, which langchain 1.x / langgraph drop. Heavy example-only deps live in
 # requirements.txt for local dev convenience.
 dev = [
     "pytest>=8.0",
+    "pytest-cov>=5.0",
     "fastapi>=0.110",
     "jinja2>=3.1",
+    "ruff>=0.16",
+    "mypy>=1.10",
+    "build>=1.2",
+    "twine>=5.0",
 ]
 # OpenAI-compatible client for the CometAPI provider
 # (agentbrake.providers.cometapi). The core never imports it.
@@ -40,7 +82,39 @@ include = ["agentbrake*"]
 exclude = ["tests*", "examples*"]
 
 [tool.setuptools.package-data]
+"agentbrake" = ["py.typed"]
 "agentbrake.server" = ["templates/*.html"]
+
+[tool.setuptools.dynamic]
+# agentbrake/__init__.py is the single source of truth for the version —
+# pyproject.toml reads it instead of duplicating the string (the two drifted
+# out of sync once already: see commit 53bfa12, "fix: sync __version__ with
+# pyproject").
+version = { attr = "agentbrake.__version__" }
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.coverage.run]
+source = ["agentbrake"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py39"
+
+[tool.ruff.lint]
+# Real-bug-catching rules only for this first rollout: pyflakes (unused
+# imports, undefined names), pycodestyle errors, import sorting. Deliberately
+# NOT pulling in pyupgrade/flake8-simplify/etc — those would force a large
+# mechanical rewrite (e.g. Optional[str] -> str | None across the codebase)
+# as a side effect of turning linting on, which belongs in its own PR.
+select = ["E", "F", "I"]
+
+[tool.mypy]
+# No python_version pin: recent mypy releases dropped 3.9 as a target-version
+# option even though the package still supports it at runtime (requires-python
+# >=3.9). Letting mypy use the interpreter it's actually running under (the CI
+# lint job pins 3.12) avoids that mismatch.
+ignore_missing_imports = true
+warn_unused_ignores = true
+warn_redundant_casts = true

@@ -48,11 +48,12 @@ from __future__ import annotations
 import hashlib
 import json
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional
 from uuid import uuid4
 
 from agentbrake import signing
 from agentbrake.server import attest
+
 from .types import InterruptReason, RunState, ToolCall
 
 TOKEN_VERSION = "1"
@@ -68,9 +69,9 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def _parse_ts(value: str) -> Optional[datetime]:
+def _parse_ts(value: Optional[str]) -> Optional[datetime]:
     try:
-        parsed = datetime.fromisoformat(value)
+        parsed = datetime.fromisoformat(value)  # type: ignore[arg-type]  # None deliberately falls into the except below
     except (TypeError, ValueError):
         return None
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
@@ -131,11 +132,11 @@ class DelegationToken:
     @property
     def delegator(self) -> str:
         """The root delegator — where the chain of authority starts."""
-        return self.bodies[0].get("delegator")
+        return self.bodies[0].get("delegator")  # type: ignore[return-value]  # grant() always sets this key
 
     @property
     def delegatee(self) -> str:
-        return self.leaf.get("delegatee")
+        return self.leaf.get("delegatee")  # type: ignore[return-value]  # grant() always sets this key
 
     @property
     def allowed_tools(self) -> List[str]:
@@ -157,8 +158,8 @@ class DelegationToken:
     def effective_expires_at(self) -> Optional[datetime]:
         """The chain expires when its *earliest* link expires."""
         stamps = [_parse_ts(b.get("expires_at")) for b in self.bodies]
-        stamps = [s for s in stamps if s is not None]
-        return min(stamps) if stamps else None
+        valid_stamps = [s for s in stamps if s is not None]
+        return min(valid_stamps) if valid_stamps else None
 
     def is_expired(self, now: Optional[datetime] = None) -> bool:
         expires = self.effective_expires_at()
@@ -242,7 +243,9 @@ def grant(
         if intent is None and intent_digest is None:
             raise DelegationError("a root grant must carry the user intent (or its digest)")
         effective_intent = intent
-        effective_digest = intent_digest or intent_digest_for(intent)
+        # intent_digest_for(intent) below only runs when intent_digest is falsy,
+        # and the guard above already rules out intent being None in that case.
+        effective_digest = intent_digest or intent_digest_for(intent)  # type: ignore[arg-type]
         if intent is not None and intent_digest is not None:
             if intent_digest_for(intent) != intent_digest:
                 raise DelegationError("intent text and intent_digest disagree")
@@ -385,7 +388,9 @@ def verify(
             sig_ok, sig_detail = False, f"link {i}: unsupported alg {body.get('alg')!r}"
             break
         if trusted_agents is not None:
-            pub = trusted_agents.get(body.get("delegator"))
+            # A missing/non-string "delegator" simply misses the pin lookup below
+            # (dict.get on a mismatched key returns None, never raises).
+            pub = trusted_agents.get(body.get("delegator"))  # type: ignore[arg-type]
             if pub is None:
                 sig_ok = False
                 sig_detail = (
@@ -393,7 +398,7 @@ def verify(
                 )
                 break
         elif public_keys is not None:
-            pub = public_keys.get(body.get("key_id"))
+            pub = public_keys.get(body.get("key_id"))  # type: ignore[arg-type]
             if pub is None:
                 sig_ok, sig_detail = False, f"link {i}: unknown key_id {body.get('key_id')}"
                 break

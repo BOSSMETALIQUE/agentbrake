@@ -34,16 +34,16 @@ pip install -e ".[dev]"
 pytest
 ```
 
-If `pytest` returns 15 passed, you're good to go.
+If `pytest` reports all tests passing (no failures), you're good to go.
 
 ## Running the examples (optional)
 
-The examples in `examples/` use LangGraph + Anthropic API. They require an Anthropic API key and additional dependencies.
+See [`examples/README.md`](examples/README.md) for what each example demonstrates and its prerequisites. Most examples use LangGraph + Anthropic API and require an Anthropic API key; the CometAPI cost-tracking example needs a `COMETAPI_KEY` instead.
 
 ```bash
 pip install -r requirements.txt
 cp .env.example .env
-# Edit .env to add your ANTHROPIC_API_KEY
+# Edit .env to add your ANTHROPIC_API_KEY (and/or COMETAPI_KEY)
 python examples/01_loop_detection.py
 ```
 

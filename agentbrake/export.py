@@ -310,7 +310,7 @@ def verify_export(
             "commitment is not cryptographically bound",
         )
     else:
-        head_key = public_keys.get(statement.get("key_id"))
+        head_key = public_keys.get(statement.get("key_id"))  # type: ignore[arg-type]
         head_ok = verify_head_statement(
             statement, head_signature, public_key_hex=head_key, hmac_key=hmac_key
         )
@@ -380,7 +380,7 @@ def verify_export(
         old_head_ok = old_signature is not None and verify_head_statement(
             old_statement,
             old_signature,
-            public_key_hex=public_keys.get(old_statement.get("key_id")),
+            public_key_hex=public_keys.get(old_statement.get("key_id")),  # type: ignore[arg-type]
             hmac_key=hmac_key,
         )
         check(
@@ -574,7 +574,7 @@ def verify_receipt_proof(
     if head_signature is None:
         check("head_signature", False, "head statement is UNSIGNED")
     else:
-        head_key = public_keys.get(statement.get("key_id"))
+        head_key = public_keys.get(statement.get("key_id"))  # type: ignore[arg-type]
         head_ok = verify_head_statement(
             statement, head_signature, public_key_hex=head_key, hmac_key=hmac_key
         )
