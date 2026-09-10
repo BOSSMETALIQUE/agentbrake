@@ -116,6 +116,18 @@ class Run:
         self.flow_detector = (
             FlowRuleDetector(flow_policy) if flow_policy is not None else None
         )
+        if flow_policy is not None:
+            # Fail loudly on a policy that cannot enforce what it appears to,
+            # here rather than on the call it should have blocked.
+            flow_policy.validate()
+            undeclared = flow_policy.undeclared_tools(self.allowed_tools)
+            if undeclared:
+                print(
+                    f"⚠️  AgentBrake: {len(undeclared)} allow-listed tool(s) are "
+                    f"declared neither source nor sink, so the flow engine cannot "
+                    f"see them: {', '.join(undeclared)}. Declare every egress path.",
+                    file=sys.stderr,
+                )
         self.flow_ledger: receipts.Ledger = (
             receipts.JsonlLedger(receipts_path)
             if receipts_path

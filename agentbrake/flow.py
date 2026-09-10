@@ -116,6 +116,59 @@ class FlowPolicy:
             label for label in active_labels if self.is_denied(label, sink_category)
         )
 
+    # ----- misconfiguration checks ----------------------------------------
+
+    def validate(self) -> "FlowPolicy":
+        """Raise if any deny rule can never fire. Returns ``self`` so it chains.
+
+        Labels and categories are free-form strings, so ``deny_flow("untrused",
+        "egress")`` is accepted in silence and then never matches anything:
+        :meth:`is_denied` returns False forever, the policy looks protective,
+        and it enforces nothing. For a security control a silent no-op is the
+        worst available failure mode — worse than an error, because it is
+        indistinguishable from working — so a typo has to be loud.
+
+        Called for you when a policy is attached to a run. Deliberately *not*
+        called from the builders: ``deny_flow`` may legitimately run before the
+        ``source``/``sink`` it refers to, and only the finished policy can be
+        judged.
+        """
+        labels = set(self._sources.values())
+        categories = set(self._sinks.values())
+        problems: List[str] = []
+        for label, category in sorted(self._denied):
+            rule = f"deny({label!r} -> {category!r})"
+            if label not in labels:
+                problems.append(
+                    f"{rule}: no source introduces the taint label {label!r} "
+                    f"(declared: {sorted(labels) or 'none'})"
+                )
+            if category not in categories:
+                problems.append(
+                    f"{rule}: no sink belongs to the category {category!r} "
+                    f"(declared: {sorted(categories) or 'none'})"
+                )
+        if problems:
+            raise ValueError(
+                "FlowPolicy has deny rules that can never fire:\n  "
+                + "\n  ".join(problems)
+            )
+        return self
+
+    def undeclared_tools(self, allowed_tools: Iterable[str]) -> List[str]:
+        """Allow-listed tools this policy declares neither source nor sink.
+
+        Every one is a path the flow engine cannot see. Most are harmless, but
+        an egress tool you forgot to declare is exactly the hole the module
+        docstring warns about, and nothing else in the system points at it.
+        Advisory, not fatal: plenty of tools are legitimately neither.
+        """
+        return sorted(
+            tool
+            for tool in allowed_tools
+            if tool not in self._sources and tool not in self._sinks
+        )
+
 
 class FlowRuleDetector:
     """Blocks a tool call whose sink category is forbidden under active taints.

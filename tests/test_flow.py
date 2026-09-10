@@ -46,6 +46,115 @@ def test_violations_lists_only_denied_active_labels():
     assert policy.violations({"sensitive"}, "egress") == []
 
 
+# --- Misconfiguration must be loud, not silent ----------------------------
+#
+# Labels and categories are free-form strings, so a typo used to produce a
+# policy that looked protective and enforced nothing.
+
+def test_validate_accepts_a_coherent_policy_and_chains():
+    policy = block_exfiltration(
+        untrusted_readers=["read_webpage"], egress_tools=["send_email"]
+    )
+    assert policy.validate() is policy
+
+
+def test_validate_rejects_a_deny_rule_for_an_undeclared_label():
+    policy = FlowPolicy(
+        sources={"read_webpage": "untrusted"},
+        sinks={"send_email": "egress"},
+        deny=[("untrused", "egress")],  # typo — would never have fired
+    )
+    with pytest.raises(ValueError) as ei:
+        policy.validate()
+    msg = str(ei.value)
+    assert "untrused" in msg
+    assert "no source introduces the taint label" in msg
+    assert "untrusted" in msg  # names what *is* declared, so the typo is obvious
+
+
+def test_validate_rejects_a_deny_rule_for_an_undeclared_category():
+    policy = FlowPolicy(
+        sources={"read_webpage": "untrusted"},
+        sinks={"send_email": "egress"},
+        deny=[("untrusted", "exfil")],
+    )
+    with pytest.raises(ValueError) as ei:
+        policy.validate()
+    assert "no sink belongs to the category" in str(ei.value)
+
+
+def test_validate_reports_every_broken_rule_at_once():
+    policy = FlowPolicy(
+        sources={"read_webpage": "untrusted"},
+        sinks={"send_email": "egress"},
+        deny=[("untrused", "egress"), ("untrusted", "exfil")],
+    )
+    with pytest.raises(ValueError) as ei:
+        policy.validate()
+    assert str(ei.value).count("deny(") == 2
+
+
+def test_validate_tolerates_builders_called_out_of_order():
+    """deny_flow may legitimately precede the source/sink it refers to."""
+    policy = (
+        FlowPolicy()
+        .deny_flow(source="untrusted", sink="egress")
+        .source("read_webpage", taint="untrusted")
+        .sink("send_email", category="egress")
+    )
+    assert policy.validate() is policy
+
+
+def test_attaching_a_broken_policy_to_a_run_fails_immediately():
+    """The error belongs at run start, not on the call it should have blocked."""
+    policy = FlowPolicy(
+        sources={"read_webpage": "untrusted"},
+        sinks={"send_email": "egress"},
+        deny=[("untrused", "egress")],
+    )
+    with pytest.raises(ValueError, match="can never fire"):
+        agentbrake.run(
+            allowed_tools=["read_webpage", "send_email"],
+            budget_usd=10.0,
+            flow_policy=policy,
+        )
+
+
+def test_undeclared_tools_names_paths_the_engine_cannot_see():
+    policy = block_exfiltration(
+        untrusted_readers=["read_webpage"], egress_tools=["send_email"]
+    )
+    assert policy.undeclared_tools(
+        ["read_webpage", "send_email", "http_post", "calculator"]
+    ) == ["calculator", "http_post"]
+    assert policy.undeclared_tools(["read_webpage", "send_email"]) == []
+
+
+def test_run_warns_about_allow_listed_tools_the_policy_cannot_see(capsys):
+    policy = block_exfiltration(
+        untrusted_readers=["read_webpage"], egress_tools=["send_email"]
+    )
+    with agentbrake.run(
+        # http_post is an egress path nobody declared — the exact gap.
+        allowed_tools=["read_webpage", "send_email", "http_post"],
+        budget_usd=10.0,
+        flow_policy=policy,
+    ):
+        pass
+    assert "http_post" in capsys.readouterr().err
+
+
+def test_no_warning_when_every_allow_listed_tool_is_declared(capsys):
+    policy = block_exfiltration(
+        untrusted_readers=["read_webpage"], egress_tools=["send_email"]
+    )
+    with agentbrake.run(
+        allowed_tools=["read_webpage", "send_email"], budget_usd=10.0, flow_policy=policy
+    ):
+        pass
+    assert "neither source nor sink" not in capsys.readouterr().err
+
+
 # --- FlowRuleDetector: check / apply_taint --------------------------------
 
 def _policy() -> FlowPolicy:
