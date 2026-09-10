@@ -491,12 +491,17 @@ def guard() -> Callable[[Callable[..., Any]], Callable[..., Any]]:
                 call.outcome = "error"
                 call.error = repr(e)
                 raise
-            call.outcome = "ok"
-            # A source tool only taints the run once it has actually run and
-            # returned — a read that raised ingested nothing.
-            if active.flow_detector is not None:
-                active.flow_detector.apply_taint(active.state, call)
-            return result
+            else:
+                call.outcome = "ok"
+                return result
+            finally:
+                # Taint on ATTEMPT, not on success. A source tool that fetched
+                # attacker content and *then* raised has still ingested it, and
+                # the agent loop above us will hand the exception text — which
+                # can carry that content — back to the model. Treating a failed
+                # read as harmless is what let the injection through.
+                if active.flow_detector is not None:
+                    active.flow_detector.apply_taint(active.state, call)
 
         return wrapper
 

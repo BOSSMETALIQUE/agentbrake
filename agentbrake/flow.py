@@ -21,11 +21,16 @@ Design notes / honest limitations:
   is no reliable way to "sanitize" attacker content mid-run — but it means a
   long-lived agent that legitimately needs to read untrusted data and *then*
   send unrelated trusted data will be stopped. Use a fresh ``run()`` per task.
-* **Granularity is the tool call.** A single tool that both ingests untrusted
-  content *and* egresses in one call is not caught by its own taint (the taint
-  is applied only after the call returns). Keep sources and sinks separate.
-* **Taint is applied only on success** (``outcome == "ok"``). A read that raises
-  ingested nothing, so it introduces no taint.
+* **Granularity is the tool call.** A tool declared as *both* a source and a
+  sink is checked against the taint it would introduce itself, so it is blocked
+  on its first call rather than egressing once and tainting afterwards. What
+  the engine still cannot see is a single call that ingests and egresses under
+  a name you declared as only one of the two — keep sources and sinks separate.
+* **Taint is applied on attempt, not on success.** A source call taints the run
+  even when it raises: a read that fails after fetching has still ingested the
+  content, and agent loops routinely feed the exception message — which can
+  carry that content — straight back to the model. There is no way to prove a
+  failed read ingested nothing, so the conservative assumption is that it did.
 * **It is not a sandbox.** If the agent reaches a sink through a tool you never
   declared, the flow engine cannot see it. Declare every egress path, and keep
   the allow-list as your hard boundary underneath.
@@ -128,16 +133,33 @@ class FlowRuleDetector:
     def __init__(self, policy: FlowPolicy):
         self.policy = policy
 
+    def _active_labels(self, run_state: RunState, call: ToolCall) -> Set[str]:
+        """Taint labels in force for *this* call, including its own.
+
+        A tool declared as both source and sink — a generic ``http_request``,
+        an MCP proxy — would otherwise egress on its first call and only taint
+        afterwards, so the content it ingests could never block it. Folding in
+        the label the call introduces itself closes that window.
+        """
+        labels = set(run_state.taint_labels())
+        own = self.policy.taint_for(call.name)
+        if own is not None:
+            labels.add(own)
+        return labels
+
     def check(self, run_state: RunState, new_call: ToolCall) -> Optional[InterruptReason]:
         category = self.policy.sink_category_for(new_call.name)
         if category is None:
             return None  # not a sink — nothing to enforce
-        if self.policy.violations(run_state.taint_labels(), category):
+        if self.policy.violations(self._active_labels(run_state, new_call), category):
             return InterruptReason.FLOW
         return None
 
     def apply_taint(self, run_state: RunState, call: ToolCall) -> Optional[TaintMark]:
-        """Record the taint a just-executed source call introduced.
+        """Record the taint a source call introduced, whatever its outcome.
+
+        Called after the call has been attempted — on the error path too, since
+        a read that raised may still have ingested the content it fetched.
 
         Deduplicated by label: the first call to introduce a label keeps the
         provenance, so the receipt points at where the taint actually entered.
@@ -158,12 +180,28 @@ class FlowRuleDetector:
     def explain(self, run_state: RunState, new_call: ToolCall) -> Dict[str, object]:
         """Human- and receipt-readable detail of why a sink call is blocked."""
         category = self.policy.sink_category_for(new_call.name)
-        violated = self.policy.violations(run_state.taint_labels(), category or "")
+        violated = self.policy.violations(
+            self._active_labels(run_state, new_call), category or ""
+        )
         sources = [
             {"label": t.label, "source_tool": t.source_tool, "call_index": t.call_index}
             for t in run_state.taints
             if t.label in violated
         ]
+        own = self.policy.taint_for(new_call.name)
+        if own in violated and own not in run_state.taint_labels():
+            # Self-tainting sink blocked on its first call: the taint that
+            # stops it is the one this very call would introduce, so there is
+            # no prior mark to point at. Name the call itself instead, at the
+            # index it would have taken had it been allowed to run.
+            sources.append(
+                {
+                    "label": own,
+                    "source_tool": new_call.name,
+                    "call_index": len(run_state.calls),
+                    "self_tainting": True,
+                }
+            )
         return {
             "sink": new_call.name,
             "sink_category": category,
