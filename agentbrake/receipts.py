@@ -139,23 +139,27 @@ def build_flow_attestation(
     chain_id: str,
     agent_id: Optional[str] = None,
     blocked_at: Optional[str] = None,
+    kind: str = "flow_block",
+    decision: str = "block",
+    interrupt_id: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Assemble the (unsigned) attestation for one autonomous flow block.
+    """Assemble the (unsigned) attestation for one flow decision.
 
-    Mirrors the human-decision attestation but records ``decision="block"`` and
-    a ``flow`` payload (offending sink, the taints it violated, and the call
-    that introduced each taint).
+    Mirrors the human-decision attestation but carries a ``flow`` payload (the
+    offending sink, the taints it violated, and the call that introduced each
+    taint). Defaults describe an autonomous block; pass ``kind="flow_override"``
+    / ``decision="approve"`` for a human who let the flow through.
     """
-    return {
+    attestation: Dict[str, Any] = {
         "version": RECEIPT_VERSION,
         "alg": attest.SIGNER.alg,
         "key_id": attest.SIGNER.key_id,
         "chain_id": chain_id,
         "seq": seq,
-        "kind": "flow_block",
+        "kind": kind,
         "run_id": run_id,
         "agent_id": agent_id,
-        "decision": "block",
+        "decision": decision,
         "reason": "flow",
         "tool": sink_call.name,
         "tool_args_digest": sink_call_digest(sink_call),
@@ -164,6 +168,11 @@ def build_flow_attestation(
         "info_digest": _digest(flow),
         "prev_hash": prev_hash,
     }
+    if interrupt_id is not None:
+        # Only on an override, so the flow_block shape stays byte-identical to
+        # what earlier versions signed.
+        attestation["interrupt_id"] = interrupt_id
+    return attestation
 
 
 def _seal_and_append(ledger: Ledger, build) -> Dict[str, Any]:
@@ -218,6 +227,40 @@ def mint_flow_receipt(
             flow=flow,
             chain_id=chain_id,
             agent_id=agent_id,
+        ),
+    )
+
+
+def mint_flow_override_receipt(
+    ledger: Ledger,
+    *,
+    run_state: RunState,
+    sink_call: ToolCall,
+    flow: Dict[str, Any],
+    interrupt_id: str,
+    agent_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Receipt for a human who *approved* a flow the engine had blocked.
+
+    The ledger has to record the overrides as well as the blocks. A chain that
+    only ever proves "we stopped this" makes the security-relevant event — a
+    human waving an exfiltration through — the one thing that leaves no trace,
+    while the chain still verifies clean. ``interrupt_id`` ties the row back to
+    the approval that produced it.
+    """
+    return _seal_and_append(
+        ledger,
+        lambda seq, prev_hash, chain_id: build_flow_attestation(
+            seq=seq,
+            prev_hash=prev_hash,
+            run_id=run_state.run_id,
+            sink_call=sink_call,
+            flow=flow,
+            chain_id=chain_id,
+            agent_id=agent_id,
+            kind="flow_override",
+            decision="approve",
+            interrupt_id=interrupt_id,
         ),
     )
 

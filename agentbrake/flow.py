@@ -21,11 +21,16 @@ Design notes / honest limitations:
   is no reliable way to "sanitize" attacker content mid-run — but it means a
   long-lived agent that legitimately needs to read untrusted data and *then*
   send unrelated trusted data will be stopped. Use a fresh ``run()`` per task.
-* **Granularity is the tool call.** A single tool that both ingests untrusted
-  content *and* egresses in one call is not caught by its own taint (the taint
-  is applied only after the call returns). Keep sources and sinks separate.
-* **Taint is applied only on success** (``outcome == "ok"``). A read that raises
-  ingested nothing, so it introduces no taint.
+* **Granularity is the tool call.** A tool declared as *both* a source and a
+  sink is checked against the taint it would introduce itself, so it is blocked
+  on its first call rather than egressing once and tainting afterwards. What
+  the engine still cannot see is a single call that ingests and egresses under
+  a name you declared as only one of the two — keep sources and sinks separate.
+* **Taint is applied on attempt, not on success.** A source call taints the run
+  even when it raises: a read that fails after fetching has still ingested the
+  content, and agent loops routinely feed the exception message — which can
+  carry that content — straight back to the model. There is no way to prove a
+  failed read ingested nothing, so the conservative assumption is that it did.
 * **It is not a sandbox.** If the agent reaches a sink through a tool you never
   declared, the flow engine cannot see it. Declare every egress path, and keep
   the allow-list as your hard boundary underneath.
@@ -111,6 +116,59 @@ class FlowPolicy:
             label for label in active_labels if self.is_denied(label, sink_category)
         )
 
+    # ----- misconfiguration checks ----------------------------------------
+
+    def validate(self) -> "FlowPolicy":
+        """Raise if any deny rule can never fire. Returns ``self`` so it chains.
+
+        Labels and categories are free-form strings, so ``deny_flow("untrused",
+        "egress")`` is accepted in silence and then never matches anything:
+        :meth:`is_denied` returns False forever, the policy looks protective,
+        and it enforces nothing. For a security control a silent no-op is the
+        worst available failure mode — worse than an error, because it is
+        indistinguishable from working — so a typo has to be loud.
+
+        Called for you when a policy is attached to a run. Deliberately *not*
+        called from the builders: ``deny_flow`` may legitimately run before the
+        ``source``/``sink`` it refers to, and only the finished policy can be
+        judged.
+        """
+        labels = set(self._sources.values())
+        categories = set(self._sinks.values())
+        problems: List[str] = []
+        for label, category in sorted(self._denied):
+            rule = f"deny({label!r} -> {category!r})"
+            if label not in labels:
+                problems.append(
+                    f"{rule}: no source introduces the taint label {label!r} "
+                    f"(declared: {sorted(labels) or 'none'})"
+                )
+            if category not in categories:
+                problems.append(
+                    f"{rule}: no sink belongs to the category {category!r} "
+                    f"(declared: {sorted(categories) or 'none'})"
+                )
+        if problems:
+            raise ValueError(
+                "FlowPolicy has deny rules that can never fire:\n  "
+                + "\n  ".join(problems)
+            )
+        return self
+
+    def undeclared_tools(self, allowed_tools: Iterable[str]) -> List[str]:
+        """Allow-listed tools this policy declares neither source nor sink.
+
+        Every one is a path the flow engine cannot see. Most are harmless, but
+        an egress tool you forgot to declare is exactly the hole the module
+        docstring warns about, and nothing else in the system points at it.
+        Advisory, not fatal: plenty of tools are legitimately neither.
+        """
+        return sorted(
+            tool
+            for tool in allowed_tools
+            if tool not in self._sources and tool not in self._sinks
+        )
+
 
 class FlowRuleDetector:
     """Blocks a tool call whose sink category is forbidden under active taints.
@@ -128,16 +186,33 @@ class FlowRuleDetector:
     def __init__(self, policy: FlowPolicy):
         self.policy = policy
 
+    def _active_labels(self, run_state: RunState, call: ToolCall) -> Set[str]:
+        """Taint labels in force for *this* call, including its own.
+
+        A tool declared as both source and sink — a generic ``http_request``,
+        an MCP proxy — would otherwise egress on its first call and only taint
+        afterwards, so the content it ingests could never block it. Folding in
+        the label the call introduces itself closes that window.
+        """
+        labels = set(run_state.taint_labels())
+        own = self.policy.taint_for(call.name)
+        if own is not None:
+            labels.add(own)
+        return labels
+
     def check(self, run_state: RunState, new_call: ToolCall) -> Optional[InterruptReason]:
         category = self.policy.sink_category_for(new_call.name)
         if category is None:
             return None  # not a sink — nothing to enforce
-        if self.policy.violations(run_state.taint_labels(), category):
+        if self.policy.violations(self._active_labels(run_state, new_call), category):
             return InterruptReason.FLOW
         return None
 
     def apply_taint(self, run_state: RunState, call: ToolCall) -> Optional[TaintMark]:
-        """Record the taint a just-executed source call introduced.
+        """Record the taint a source call introduced, whatever its outcome.
+
+        Called after the call has been attempted — on the error path too, since
+        a read that raised may still have ingested the content it fetched.
 
         Deduplicated by label: the first call to introduce a label keeps the
         provenance, so the receipt points at where the taint actually entered.
@@ -158,12 +233,28 @@ class FlowRuleDetector:
     def explain(self, run_state: RunState, new_call: ToolCall) -> Dict[str, object]:
         """Human- and receipt-readable detail of why a sink call is blocked."""
         category = self.policy.sink_category_for(new_call.name)
-        violated = self.policy.violations(run_state.taint_labels(), category or "")
+        violated = self.policy.violations(
+            self._active_labels(run_state, new_call), category or ""
+        )
         sources = [
             {"label": t.label, "source_tool": t.source_tool, "call_index": t.call_index}
             for t in run_state.taints
             if t.label in violated
         ]
+        own = self.policy.taint_for(new_call.name)
+        if own in violated and own not in run_state.taint_labels():
+            # Self-tainting sink blocked on its first call: the taint that
+            # stops it is the one this very call would introduce, so there is
+            # no prior mark to point at. Name the call itself instead, at the
+            # index it would have taken had it been allowed to run.
+            sources.append(
+                {
+                    "label": own,
+                    "source_tool": new_call.name,
+                    "call_index": len(run_state.calls),
+                    "self_tainting": True,
+                }
+            )
         return {
             "sink": new_call.name,
             "sink_category": category,

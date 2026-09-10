@@ -123,13 +123,20 @@ def build_report(
         )
 
     flow_blocks = [e for e in events if e["kind"] == "flow_block"]
+    # A human overriding a flow block is its own category. Left in the generic
+    # approval bucket it reads as routine sign-off, when it is the event an
+    # auditor most needs to find: an exfiltration the engine caught and a
+    # person let through anyway.
+    flow_overrides = [e for e in events if e["kind"] == "flow_override"]
     delegation_blocks = [e for e in events if e["kind"] == "delegation_block"]
     delegation_lifecycle = [
         e for e in events if e["kind"] in _DELEGATION_LIFECYCLE_KINDS
     ]
     human = [
         e for e in events
-        if e["kind"] not in _BLOCK_KINDS and e["kind"] not in _DELEGATION_LIFECYCLE_KINDS
+        if e["kind"] not in _BLOCK_KINDS
+        and e["kind"] not in _DELEGATION_LIFECYCLE_KINDS
+        and e["kind"] != "flow_override"
     ]
     kills = [e for e in human if e["decision"] == "kill"]
     approvals = [e for e in human if e["decision"] == "approve"]
@@ -162,6 +169,7 @@ def build_report(
             "autonomous_blocks": len(flow_blocks) + len(delegation_blocks),
             "human_kills": len(kills),
             "human_approvals": len(approvals),
+            "flow_overrides": len(flow_overrides),
             "delegations_granted": len(
                 [e for e in delegation_lifecycle if e["kind"] == "delegation_grant"]
             ),
@@ -177,6 +185,7 @@ def build_report(
             "max_decision_seconds": max(decision_times) if decision_times else None,
         },
         "flow_blocks": flow_blocks,
+        "flow_overrides": flow_overrides,
         "delegation_blocks": delegation_blocks,
         "delegation_lifecycle": delegation_lifecycle,
         "human_decisions": human,

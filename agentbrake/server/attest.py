@@ -163,9 +163,18 @@ def tool_call_digest(context: Dict[str, Any]) -> str:
     tool_name = context.get("tool") or context.get("tool_name")
     run_state = context.get("run_state") or {}
     calls = run_state.get("calls") or [] if isinstance(run_state, dict) else []
+    pending = context.get("pending_call") or {}
     subject = {
         "tool": tool_name,
         "calls": [{"name": c.get("name"), "args": c.get("args", {})} for c in calls],
+        # The call actually being decided on. It is NOT in `calls` — the SDK
+        # appends only after the detectors pass — so without this the receipt
+        # bound the call history and left the approved action itself unbound.
+        "pending": (
+            {"tool": pending.get("tool"), "args": pending.get("args", {})}
+            if pending
+            else None
+        ),
     }
     return "sha256:" + _sha256_hex(canonical_json(subject))
 
@@ -174,10 +183,14 @@ def info_summary(context: Dict[str, Any]) -> Dict[str, Any]:
     """Small human-readable gist of what the validation UI displayed."""
     run_state = context.get("run_state") or {}
     calls = run_state.get("calls") or [] if isinstance(run_state, dict) else []
+    pending = context.get("pending_call") or {}
     return {
         "tool": context.get("tool") or context.get("tool_name"),
         "total_cost_usd": context.get("total_cost_usd", 0.0),
         "num_calls": len(calls),
+        # Names the action approved, not just the run it happened in.
+        "pending_tool": pending.get("tool"),
+        "pending_args_digest": pending.get("args_digest"),
     }
 
 

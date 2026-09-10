@@ -6,7 +6,7 @@ import json
 import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse
@@ -48,6 +48,14 @@ class CreateInterruptOut(BaseModel):
 
 class DecideIn(BaseModel):
     decision: str = Field(..., description="approve | kill")
+    args_digest: Optional[str] = Field(
+        None,
+        description=(
+            "Digest of the pending call the approver was shown. Required to "
+            "approve an interrupt whose context carries one; it binds the "
+            "decision to the exact action displayed."
+        ),
+    )
 
 
 class StatusOut(BaseModel):
@@ -104,6 +112,8 @@ def view_interrupt(interrupt_id: str, request: Request) -> HTMLResponse:
     if isinstance(run_state, dict):
         calls = run_state.get("calls") or []
 
+    pending = ctx.get("pending_call") or {}
+
     return TEMPLATES.TemplateResponse(
         request,
         "validate.html",
@@ -114,6 +124,16 @@ def view_interrupt(interrupt_id: str, request: Request) -> HTMLResponse:
             "calls": calls,
             "tool_label": _tool_label(ctx),
             "cost_label": _format_cost(ctx.get("total_cost_usd", 0.0)),
+            # The action awaiting a decision, shown in full. The digest is
+            # echoed back on approve so the server can prove the approver saw
+            # these exact arguments.
+            "pending": pending,
+            "pending_args_json": (
+                json.dumps(pending.get("args", {}), indent=2, default=str)
+                if pending
+                else None
+            ),
+            "pending_digest": pending.get("args_digest"),
         },
     )
 
@@ -126,6 +146,28 @@ def view_interrupt(interrupt_id: str, request: Request) -> HTMLResponse:
 def decide(interrupt_id: str, payload: DecideIn) -> StatusOut:
     if payload.decision not in {"approve", "kill"}:
         raise HTTPException(status_code=400, detail="decision must be 'approve' or 'kill'")
+
+    # Bind the approval to the action. The approver echoes the digest of the
+    # pending call their page displayed; if it does not match the one stored
+    # with the interrupt, they were looking at something other than what would
+    # execute, and the approval means nothing. A `kill` needs no digest —
+    # stopping is safe under every reading of the request.
+    if payload.decision == "approve":
+        existing = store.get_interrupt(interrupt_id)
+        if existing is None:
+            raise HTTPException(status_code=404, detail="interrupt not found")
+        expected = ((existing["context"] or {}).get("pending_call") or {}).get(
+            "args_digest"
+        )
+        if expected is not None and payload.args_digest != expected:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "args_digest does not match the pending call; approval must "
+                    "be bound to the action displayed. Reload the interrupt."
+                ),
+            )
+
     result = store.decide_interrupt(interrupt_id, payload.decision)
     if result is None:
         raise HTTPException(status_code=404, detail="interrupt not found")
