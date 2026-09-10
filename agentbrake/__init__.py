@@ -327,11 +327,24 @@ def _require_run() -> Run:
     return active
 
 
-def _build_context(active: Run, name: str) -> dict:
-    """Per-interrupt context (sent to backend, attached to exception)."""
+def _build_context(active: Run, call: ToolCall) -> dict:
+    """Per-interrupt context (sent to backend, attached to exception).
+
+    ``pending_call`` carries the arguments of the call awaiting a decision.
+    Without it an approver saw only a tool *name* — approving ``send_email``
+    with no sight of ``to=attacker@evil.com`` — because the pending call is
+    appended to ``run_state.calls`` only after the detectors pass. An approval
+    that is not bound to the exact action is not an approval; the digest is
+    what the approver echoes back so the server can prove the two matched.
+    """
     return {
         "run_id": active.state.run_id,
-        "tool": name,
+        "tool": call.name,
+        "pending_call": {
+            "tool": call.name,
+            "args": call.args,
+            "args_digest": receipts.sink_call_digest(call),
+        },
         "total_cost_usd": active.state.total_cost_usd,
         "run_state": active.state.model_dump(mode="json"),
     }
@@ -341,8 +354,12 @@ def _handle_remote_interrupt(
     active: Run,
     reason: InterruptReason,
     context: dict,
-) -> bool:
-    """Submit interrupt, wait for human decision. Returns True if approved.
+) -> Optional[str]:
+    """Submit interrupt, wait for human decision.
+
+    Returns the interrupt id if a human approved, else None. The caller needs
+    the id, not just a boolean: an approval has to be minted into the receipt
+    chain, and the row must point back at the decision that authorised it.
 
     Falls back to local-mode behavior (raise) if the backend is unreachable —
     the SDK must fail safely: if validation can't happen, default to stop.
@@ -361,7 +378,7 @@ def _handle_remote_interrupt(
             f"Stopping run.",
             file=sys.stderr,
         )
-        return False
+        return None
 
     # SECURITY: do NOT print the validation URL into the agent's own output by
     # default. The guarded agent runs in THIS process; if it can read the URL
@@ -397,8 +414,8 @@ def _handle_remote_interrupt(
             f"✓ AgentBrake [{reason.value.upper()}] resumed by human.",
             file=sys.stderr,
         )
-        return True
-    return False
+        return interrupt_id
+    return None
 
 
 def guard() -> Callable[[Callable[..., Any]], Callable[..., Any]]:
@@ -433,7 +450,7 @@ def guard() -> Callable[[Callable[..., Any]], Callable[..., Any]]:
                 if reason is None:
                     continue
 
-                context = _build_context(active, name)
+                context = _build_context(active, call)
                 if reason is InterruptReason.FLOW and active.flow_detector is not None:
                     context["flow"] = active.flow_detector.explain(active.state, call)
                 if (
@@ -442,12 +459,32 @@ def guard() -> Callable[[Callable[..., Any]], Callable[..., Any]]:
                 ):
                     context["delegation"] = active.delegation_detector.explain(call)
 
-                if active.mode == "remote" and _handle_remote_interrupt(
-                    active, reason, context
-                ):
-                    # Human said go: execute as if the detector hadn't fired.
-                    # Skip remaining detectors.
-                    break
+                approved_id = (
+                    _handle_remote_interrupt(active, reason, context)
+                    if active.mode == "remote"
+                    else None
+                )
+                if approved_id is not None:
+                    # A human waved this through. Mint the override into the
+                    # same chain as the blocks: a ledger that records only what
+                    # it stopped makes the one event most worth auditing — an
+                    # exfiltration let through — the one that leaves no trace.
+                    if (
+                        reason is InterruptReason.FLOW
+                        and active.flow_detector is not None
+                    ):
+                        receipts.mint_flow_override_receipt(
+                            active.flow_ledger,
+                            run_state=active.state,
+                            sink_call=call,
+                            flow=context["flow"],
+                            interrupt_id=approved_id,
+                        )
+                    # Carry on down the detector list rather than breaking out.
+                    # The human approved *this* violation; they were never shown
+                    # the budget or loop ones behind it, so those still get to
+                    # fire and ask on their own account.
+                    continue
 
                 # The block is now final: mint a signed, hash-chained receipt
                 # — a verifiable proof that this attack was stopped, here, on

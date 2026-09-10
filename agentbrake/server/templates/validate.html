@@ -146,6 +146,23 @@
         </div>
       </div>
 
+      {% if pending %}
+      <div class="panel">
+        <h2>Action awaiting your approval</h2>
+        <div class="sub" style="margin: 0 0 10px;">
+          This call has <strong>not run</strong>. Approving executes exactly
+          this, with exactly these arguments.
+        </div>
+        <div class="kv">
+          <div class="k">Tool</div><div><strong>{{ pending.tool }}</strong></div>
+        </div>
+        <pre>{{ pending_args_json }}</pre>
+        <div class="sub" style="margin: 10px 0 0;">
+          Bound as <code>{{ pending_digest }}</code>
+        </div>
+      </div>
+      {% endif %}
+
       <div class="panel">
         <h2>Context</h2>
         <pre>{{ context_json }}</pre>
@@ -183,6 +200,9 @@
 
       <script>
         const id = "{{ record.id }}";
+        // Digest of the pending call rendered above; null when the interrupt
+        // carries no pending_call (older SDKs, hand-crafted POSTs).
+        const pendingDigest = {{ (pending_digest | tojson) if pending_digest else 'null' }};
         const result = document.getElementById('result');
         const approveBtn = document.getElementById('approveBtn');
         const killBtn = document.getElementById('killBtn');
@@ -212,12 +232,21 @@
                 'Content-Type': 'application/json',
                 'X-Approver-Secret': secret
               },
-              body: JSON.stringify({ decision })
+              // Echo the digest of the action this page displayed, so the
+              // server can refuse an approval bound to anything else.
+              body: JSON.stringify({ decision, args_digest: pendingDigest })
             });
             if (r.status === 401 || r.status === 403) {
               result.className = 'result show killed';
               result.textContent = 'Rejected: invalid approver secret.';
               approveBtn.disabled = false;
+              killBtn.disabled = false;
+              return;
+            }
+            if (r.status === 409) {
+              result.className = 'result show killed';
+              result.textContent =
+                'Rejected: this page no longer matches the pending action. Reload before deciding.';
               killBtn.disabled = false;
               return;
             }

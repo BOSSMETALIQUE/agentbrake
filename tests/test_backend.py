@@ -228,3 +228,132 @@ def test_html_view_does_not_leak_approver_secret(client: TestClient) -> None:
     page = client.get(f"/interrupts/{iid}").text
     assert APPROVER_SECRET not in page
     assert SDK_SECRET not in page
+
+
+# --- Approval is bound to the action (PIPE08 / ASI09) ---------------------
+#
+# An approval that names only a tool is not an approval. These cover the fix
+# for approvers seeing "send_email" with no sight of `to=attacker@evil.com`.
+
+PENDING_DIGEST = "sha256:" + "a" * 64
+
+
+def _pending_payload(args: dict | None = None, digest: str = PENDING_DIGEST) -> dict:
+    payload = _sample_payload()
+    payload["reason"] = "FLOW"
+    payload["context"]["tool"] = "send_email"
+    payload["context"]["pending_call"] = {
+        "tool": "send_email",
+        "args": args if args is not None else {"to": "attacker@evil.com"},
+        "args_digest": digest,
+    }
+    return payload
+
+
+def _create_pending(client: TestClient, **kw) -> str:
+    resp = client.post("/interrupts", json=_pending_payload(**kw), headers=SDK_HEADERS)
+    assert resp.status_code == 200
+    return resp.json()["interrupt_id"]
+
+
+def test_approval_page_shows_the_pending_arguments(client: TestClient) -> None:
+    """The approver must see what they are approving, not just its name."""
+    iid = _create_pending(client)
+    page = client.get(f"/interrupts/{iid}").text
+    assert "attacker@evil.com" in page
+    assert "Action awaiting your approval" in page
+    assert PENDING_DIGEST in page
+
+
+def test_pending_arguments_are_escaped_in_the_page(client: TestClient) -> None:
+    """Pending args are attacker-controlled — rendering them must not inject.
+
+    The whole point of the panel is to put untrusted arguments in front of a
+    human, so it is exactly where an injected payload would pay off.
+    """
+    iid = _create_pending(client, args={"body": "<script>alert(1)</script>"})
+    page = client.get(f"/interrupts/{iid}").text
+    assert "<script>alert(1)</script>" not in page
+    assert "alert(1)" in page  # displayed, but escaped
+
+
+def test_approve_without_the_digest_is_refused(client: TestClient) -> None:
+    iid = _create_pending(client)
+    resp = client.post(
+        f"/interrupts/{iid}/decide",
+        json={"decision": "approve"},
+        headers=APPROVER_HEADERS,
+    )
+    assert resp.status_code == 409
+    # And the interrupt is untouched — still awaiting a real decision.
+    assert client.get(f"/interrupts/{iid}/status", headers=SDK_HEADERS).json() == {
+        "status": "pending"
+    }
+
+
+def test_approve_with_a_mismatched_digest_is_refused(client: TestClient) -> None:
+    iid = _create_pending(client)
+    resp = client.post(
+        f"/interrupts/{iid}/decide",
+        json={"decision": "approve", "args_digest": "sha256:" + "b" * 64},
+        headers=APPROVER_HEADERS,
+    )
+    assert resp.status_code == 409
+
+
+def test_approve_with_the_matching_digest_succeeds(client: TestClient) -> None:
+    iid = _create_pending(client)
+    resp = client.post(
+        f"/interrupts/{iid}/decide",
+        json={"decision": "approve", "args_digest": PENDING_DIGEST},
+        headers=APPROVER_HEADERS,
+    )
+    assert resp.status_code == 200
+    assert resp.json() == {"status": "approved"}
+
+
+def test_kill_never_needs_the_digest(client: TestClient) -> None:
+    """Stopping is safe under any reading of the request — never gate it."""
+    iid = _create_pending(client)
+    resp = client.post(
+        f"/interrupts/{iid}/decide",
+        json={"decision": "kill"},
+        headers=APPROVER_HEADERS,
+    )
+    assert resp.status_code == 200
+    assert resp.json() == {"status": "killed"}
+
+
+def test_interrupt_without_a_pending_call_still_approves(client: TestClient) -> None:
+    """Older SDKs send no pending_call; binding must not break them."""
+    iid = _create(client)  # _sample_payload has no pending_call
+    resp = client.post(
+        f"/interrupts/{iid}/decide",
+        json={"decision": "approve"},
+        headers=APPROVER_HEADERS,
+    )
+    assert resp.status_code == 200
+    assert resp.json() == {"status": "approved"}
+
+
+def test_receipt_binds_the_approved_arguments(client: TestClient) -> None:
+    """Two approvals differing only in pending args must not share a digest.
+
+    Before the fix the receipt digested the *executed* call history, and the
+    pending call — the one actually approved — was not in it, so both receipts
+    came out identical.
+    """
+    digests = []
+    for args in ({"to": "ok@example.com"}, {"to": "attacker@evil.com"}):
+        iid = _create_pending(client, args=args)
+        resp = client.post(
+            f"/interrupts/{iid}/decide",
+            json={"decision": "approve", "args_digest": PENDING_DIGEST},
+            headers=APPROVER_HEADERS,
+        )
+        assert resp.status_code == 200
+        att = client.get(f"/attestations/{iid}").json()["attestation"]
+        digests.append(att["tool_args_digest"])
+        assert att["info_summary"]["pending_tool"] == "send_email"
+
+    assert digests[0] != digests[1]

