@@ -36,21 +36,55 @@ class ToolCall(BaseModel):
     name: str
     args: Dict[str, Any] = Field(default_factory=dict)
     timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-    cost_usd: float = 0.0
+    cost_usd_micro: int = 0  # cost in micro-dollars (1,000,000 µ$ = 1 USD)
     outcome: str = "pending"  # pending -> ok | error
     error: Optional[str] = None  # repr of the exception when outcome == "error"
+
+    def __init__(self, **data):
+        # Backward compatibility: accept cost_usd (float) and convert to micro-dollars
+        if 'cost_usd' in data and 'cost_usd_micro' not in data:
+            if isinstance(data['cost_usd'], float):
+                data['cost_usd_micro'] = int(round(data.pop('cost_usd') * 1_000_000))
+        super().__init__(**data)
+
+    @property
+    def cost_usd(self) -> float:
+        """Convenience property: micro-dollars as USD float."""
+        return self.cost_usd_micro / 1_000_000
+
+    @cost_usd.setter
+    def cost_usd(self, value: float) -> None:
+        """Convenience setter: USD float to micro-dollars."""
+        self.cost_usd_micro = int(round(value * 1_000_000))
 
 
 class RunState(BaseModel):
     run_id: str = Field(default_factory=lambda: str(uuid4()))
-    total_cost_usd: float = 0.0
+    total_cost_usd_micro: int = 0  # cumulative cost in micro-dollars
     calls: List[ToolCall] = Field(default_factory=list)
     status: str = "running"
     taints: List[TaintMark] = Field(default_factory=list)
 
+    def __init__(self, **data):
+        # Backward compatibility: accept total_cost_usd (float) and convert to micro-dollars
+        if 'total_cost_usd' in data and 'total_cost_usd_micro' not in data:
+            if isinstance(data['total_cost_usd'], float):
+                data['total_cost_usd_micro'] = int(round(data.pop('total_cost_usd') * 1_000_000))
+        super().__init__(**data)
+
+    @property
+    def total_cost_usd(self) -> float:
+        """Convenience property: micro-dollars as USD float."""
+        return self.total_cost_usd_micro / 1_000_000
+
+    @total_cost_usd.setter
+    def total_cost_usd(self, value: float) -> None:
+        """Convenience setter: USD float to micro-dollars."""
+        self.total_cost_usd_micro = int(round(value * 1_000_000))
+
     def append(self, call: ToolCall) -> None:
         self.calls.append(call)
-        self.total_cost_usd += call.cost_usd
+        self.total_cost_usd_micro += call.cost_usd_micro
 
     def taint_labels(self) -> set:
         """The set of taint labels currently active in this run."""

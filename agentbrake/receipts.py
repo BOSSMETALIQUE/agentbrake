@@ -307,6 +307,85 @@ def mint_flow_override_receipt(
     )
 
 
+def build_detector_attestation(
+    *,
+    seq: int,
+    prev_hash: str,
+    run_id: Optional[str],
+    detector_kind: str,
+    tool: str,
+    chain_id: str,
+    agent_id: Optional[str] = None,
+    blocked_at: Optional[str] = None,
+    context: Optional[Dict[str, Any]] = None,
+    policy_digest_value: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Assemble the (unsigned) attestation for detector blocks (loop/budget/escalation).
+
+    Generic form for non-flow detector events. Captures the detector kind that
+    fired (loop, budget, escalation, timeout) and contextual info for auditing.
+
+    Args:
+        detector_kind: one of 'loop', 'budget', 'escalation', 'timeout'
+        tool: the tool call that triggered the detector
+        context: optional dict with detector-specific context (e.g., run_state summary)
+        policy_digest_value: optional digest of enforcement policy
+    """
+    attestation: Dict[str, Any] = {
+        "version": RECEIPT_VERSION,
+        "alg": attest.SIGNER.alg,
+        "key_id": attest.SIGNER.key_id,
+        "chain_id": chain_id,
+        "seq": seq,
+        "kind": detector_kind,
+        "run_id": run_id,
+        "agent_id": agent_id,
+        "decision": "block",
+        "reason": detector_kind,
+        "tool": tool,
+        "blocked_at": blocked_at or datetime.now(timezone.utc).isoformat(),
+        "context": context or {},
+        "info_digest": _digest(context or {}),
+        "prev_hash": prev_hash,
+    }
+    if policy_digest_value is not None:
+        attestation["policy_digest"] = policy_digest_value
+    return attestation
+
+
+def mint_detector_receipt(
+    ledger: Ledger,
+    *,
+    detector_kind: str,
+    run_id: Optional[str],
+    tool: str,
+    context: Optional[Dict[str, Any]] = None,
+    agent_id: Optional[str] = None,
+    policy_digest_value: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Build, sign, chain and persist receipt for detector blocks (loop/budget/escalation).
+
+    Args:
+        detector_kind: 'loop', 'budget', 'escalation', or 'timeout'
+        context: detector-specific context for the receipt (e.g., total_cost_usd)
+        policy_digest_value: optional digest of detector/budget policy
+    """
+    return _seal_and_append(
+        ledger,
+        lambda seq, prev_hash, chain_id: build_detector_attestation(
+            seq=seq,
+            prev_hash=prev_hash,
+            run_id=run_id,
+            detector_kind=detector_kind,
+            tool=tool,
+            chain_id=chain_id,
+            agent_id=agent_id,
+            context=context,
+            policy_digest_value=policy_digest_value,
+        ),
+    )
+
+
 def build_delegation_attestation(
     *,
     seq: int,

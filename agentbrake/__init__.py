@@ -521,6 +521,29 @@ def guard() -> Callable[[Callable[..., Any]], Callable[..., Any]]:
                         policy_digest_value=policy_digest_value,
                     )
                     context["receipt"] = receipts.receipt_summary(flow_row)
+                elif reason in (InterruptReason.LOOP, InterruptReason.BUDGET,
+                                 InterruptReason.ESCALATION, InterruptReason.TIMEOUT):
+                    # Mint receipts for detector blocks (loop/budget/escalation/timeout).
+                    # Context includes run state summary for auditing.
+                    detector_context = {
+                        "total_cost_usd": active.state.total_cost_usd,
+                        "call_count": len(active.state.calls),
+                    }
+                    if reason is InterruptReason.BUDGET:
+                        detector_context["budget_usd"] = active.budget_detector.budget_usd
+                    if reason is InterruptReason.LOOP:
+                        detector_context["recent_calls"] = [
+                            c.name for c in active.state.calls[-5:] if c is not None
+                        ]
+                    detector_row = receipts.mint_detector_receipt(
+                        active.flow_ledger,
+                        detector_kind=reason.value,
+                        run_id=active.state.run_id,
+                        tool=name,
+                        context=detector_context,
+                        agent_id=None,
+                    )
+                    context["receipt"] = receipts.receipt_summary(detector_row)
                 if (
                     reason is InterruptReason.DELEGATION
                     and active.delegation_detector is not None

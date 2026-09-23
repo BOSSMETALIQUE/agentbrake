@@ -194,10 +194,16 @@ def test_each_blocked_flow_extends_the_chain():
     assert ok, error
 
 
-def test_non_flow_interrupts_mint_no_receipt():
+def test_detector_interrupts_mint_receipts():
+    """Detector blocks (escalation/budget/loop) now mint signed receipts for audit."""
     with agentbrake.run(allowed_tools=["search"], budget_usd=10.0) as r:
         with pytest.raises(AgentBrakeInterrupt) as ei:
             dispatch("delete_db", {})  # escalation, not a flow block
     assert ei.value.reason is InterruptReason.ESCALATION
-    assert "receipt" not in ei.value.context
-    assert r.flow_receipts() == []
+    # OWASP quick win: escalation now mints a signed receipt
+    assert "receipt" in ei.value.context
+    assert ei.value.context["receipt"]["attestation"]["kind"] == "escalation"
+    # Receipt is stored in the flow ledger
+    receipts = r.flow_receipts()
+    assert len(receipts) == 1
+    assert receipts[0]["attestation"]["kind"] == "escalation"
