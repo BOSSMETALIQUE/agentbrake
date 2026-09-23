@@ -88,6 +88,32 @@ def key_id_for_public_key(public_key_bytes: bytes) -> str:
 
 
 @runtime_checkable
+class KeyStore(Protocol):
+    """Pluggable storage for Ed25519 signing keys.
+
+    Enables different deployment profiles:
+    - FileKeyStore: PEM files on disk (development, local runs)
+    - InMemoryKeyStore: ephemeral keys (testing, short-lived processes)
+    - HSM-backed (production): hardware-confined key material
+
+    A KeyStore does NOT sign — it only loads/saves the key material.
+    Signing happens in Ed25519Signer; this just abstracts WHERE the key lives.
+    """
+
+    def load_private_key(self) -> Ed25519PrivateKey:
+        """Return the Ed25519 private key. Raises if key is missing or corrupted."""
+        ...
+
+    def save_private_key(self, private_key: Ed25519PrivateKey) -> None:
+        """Persist the Ed25519 private key for future loads."""
+        ...
+
+    def key_exists(self) -> bool:
+        """True if a key is available via load_private_key()."""
+        ...
+
+
+@runtime_checkable
 class Signer(Protocol):
     """Anything that can sign attestation bytes and identify its key."""
 
@@ -222,6 +248,63 @@ def verify_ed25519(public_key_hex: str, message: bytes, signature_hex: str) -> b
         return Ed25519Verifier(public_key_hex).verify(message, signature_hex)
     except ValueError:
         return False
+
+
+# ----- KeyStore implementations -----------------------------------------------
+
+
+class InMemoryKeyStore:
+    """Ephemeral in-memory key storage — lost when the process exits.
+
+    Useful for testing and short-lived processes. No persistence layer means
+    the key is regenerated on each process start, so receipts minted under it
+    are reproducible only within a single run.
+    """
+
+    def __init__(self, private_key: Optional[Ed25519PrivateKey] = None):
+        self._private_key = private_key or Ed25519PrivateKey.generate()
+
+    def load_private_key(self) -> Ed25519PrivateKey:
+        return self._private_key
+
+    def save_private_key(self, private_key: Ed25519PrivateKey) -> None:
+        self._private_key = private_key
+
+    def key_exists(self) -> bool:
+        return True  # Always have one in memory
+
+
+class FileKeyStore:
+    """PEM file storage for Ed25519 keys — persisted to disk.
+
+    Standard deployment: keys live in AGENTBRAKE_SIGNING_KEY_FILE (PEM format).
+    On first load, auto-generates a key if the file doesn't exist (development).
+    In production, pre-provision the key file so it is never regenerated.
+    """
+
+    def __init__(self, path: str):
+        self.path = Path(path).expanduser()
+
+    def load_private_key(self) -> Ed25519PrivateKey:
+        if not self.path.exists():
+            raise FileNotFoundError(f"Key file not found: {self.path}")
+        data = self.path.read_bytes()
+        key = serialization.load_pem_private_key(data, password=None)
+        if not isinstance(key, Ed25519PrivateKey):
+            raise ValueError(f"{self.path} does not contain an Ed25519 private key")
+        return key
+
+    def save_private_key(self, private_key: Ed25519PrivateKey) -> None:
+        pem_bytes = private_key.private_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PrivateFormat.PKCS8,
+            encryption_algorithm=serialization.NoEncryption(),
+        )
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.path.write_bytes(pem_bytes)
+
+    def key_exists(self) -> bool:
+        return self.path.exists()
 
 
 class HmacSigner:
