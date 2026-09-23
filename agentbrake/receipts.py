@@ -129,6 +129,27 @@ def sink_call_digest(call: ToolCall) -> str:
     return _digest({"tool": call.name, "args": call.args})
 
 
+def policy_digest(policy: Dict[str, Any]) -> str:
+    """Digest of a flow policy, binding the receipt to the rules that governed it.
+
+    The ``policy`` dict must have keys: sources, sinks, deny (each a list/dict).
+    This digest cryptographically commits the receipt to exactly which taints and
+    sinks were in effect, so an auditor can verify the block was applied under
+    the stated policy — the receipt proves not just "we stopped this", but
+    "we stopped this under policy X".
+
+    Example::
+
+        policy_data = {
+            "sources": {"read_webpage": "untrusted"},
+            "sinks": {"send_email": "egress"},
+            "deny": [["untrusted", "egress"]],
+        }
+        digest = policy_digest(policy_data)
+    """
+    return _digest(policy)
+
+
 def build_flow_attestation(
     *,
     seq: int,
@@ -142,6 +163,7 @@ def build_flow_attestation(
     kind: str = "flow_block",
     decision: str = "block",
     interrupt_id: Optional[str] = None,
+    policy_digest_value: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Assemble the (unsigned) attestation for one flow decision.
 
@@ -149,6 +171,12 @@ def build_flow_attestation(
     offending sink, the taints it violated, and the call that introduced each
     taint). Defaults describe an autonomous block; pass ``kind="flow_override"``
     / ``decision="approve"`` for a human who let the flow through.
+
+    Args:
+        policy_digest_value: optional sha256 digest binding the receipt to the
+            policy that was applied. Compute via policy_digest() with the policy
+            dict, then pass here. Receipt proves "blocked under policy X", not
+            just "blocked".
     """
     attestation: Dict[str, Any] = {
         "version": RECEIPT_VERSION,
@@ -168,6 +196,8 @@ def build_flow_attestation(
         "info_digest": _digest(flow),
         "prev_hash": prev_hash,
     }
+    if policy_digest_value is not None:
+        attestation["policy_digest"] = policy_digest_value
     if interrupt_id is not None:
         # Only on an override, so the flow_block shape stays byte-identical to
         # what earlier versions signed.
@@ -211,11 +241,16 @@ def mint_flow_receipt(
     sink_call: ToolCall,
     flow: Dict[str, Any],
     agent_id: Optional[str] = None,
+    policy_digest_value: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Build, sign, chain and persist the receipt for one flow block.
 
     Signs with the shared ``attest.SIGNER`` so the receipt verifies through
     the same path as a human-decision attestation. Returns the stored row.
+
+    Args:
+        policy_digest_value: optional sha256 digest of the policy applied.
+            Binds the receipt to exactly which taints/sinks were enforced.
     """
     return _seal_and_append(
         ledger,
@@ -227,6 +262,7 @@ def mint_flow_receipt(
             flow=flow,
             chain_id=chain_id,
             agent_id=agent_id,
+            policy_digest_value=policy_digest_value,
         ),
     )
 
@@ -239,6 +275,7 @@ def mint_flow_override_receipt(
     flow: Dict[str, Any],
     interrupt_id: str,
     agent_id: Optional[str] = None,
+    policy_digest_value: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Receipt for a human who *approved* a flow the engine had blocked.
 
@@ -247,6 +284,10 @@ def mint_flow_override_receipt(
     human waving an exfiltration through — the one thing that leaves no trace,
     while the chain still verifies clean. ``interrupt_id`` ties the row back to
     the approval that produced it.
+
+    Args:
+        policy_digest_value: optional sha256 digest of the policy that was
+            overridden by the human approval.
     """
     return _seal_and_append(
         ledger,
@@ -261,6 +302,7 @@ def mint_flow_override_receipt(
             kind="flow_override",
             decision="approve",
             interrupt_id=interrupt_id,
+            policy_digest_value=policy_digest_value,
         ),
     )
 
@@ -277,6 +319,7 @@ def build_delegation_attestation(
     tool: Optional[str] = None,
     agent_id: Optional[str] = None,
     recorded_at: Optional[str] = None,
+    policy_digest_value: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Assemble the (unsigned) attestation for one delegation decision.
 
@@ -285,8 +328,11 @@ def build_delegation_attestation(
     embeds the full signed token links, so an auditor holding only the
     receipt chain can re-verify the tokens themselves — the receipt does not
     merely assert that a delegation existed, it carries the proof.
+
+    Args:
+        policy_digest_value: optional digest of delegation scope/trust policy.
     """
-    return {
+    attestation = {
         "version": RECEIPT_VERSION,
         "alg": attest.SIGNER.alg,
         "key_id": attest.SIGNER.key_id,
@@ -303,6 +349,9 @@ def build_delegation_attestation(
         "info_digest": _digest(delegation),
         "prev_hash": prev_hash,
     }
+    if policy_digest_value is not None:
+        attestation["policy_digest"] = policy_digest_value
+    return attestation
 
 
 def mint_delegation_receipt(
@@ -314,8 +363,13 @@ def mint_delegation_receipt(
     delegation: Dict[str, Any],
     tool: Optional[str] = None,
     agent_id: Optional[str] = None,
+    policy_digest_value: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Build, sign, chain and persist the receipt for one delegation decision."""
+    """Build, sign, chain and persist the receipt for one delegation decision.
+
+    Args:
+        policy_digest_value: optional digest of delegation policy/scope applied.
+    """
     return _seal_and_append(
         ledger,
         lambda seq, prev_hash, chain_id: build_delegation_attestation(
@@ -328,6 +382,7 @@ def mint_delegation_receipt(
             delegation=delegation,
             tool=tool,
             agent_id=agent_id,
+            policy_digest_value=policy_digest_value,
         ),
     )
 

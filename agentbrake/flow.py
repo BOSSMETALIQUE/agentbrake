@@ -169,6 +169,29 @@ class FlowPolicy:
             if tool not in self._sources and tool not in self._sinks
         )
 
+    def to_dict(self) -> Dict[str, object]:
+        """Serialize the policy to a dict for hashing / receipting.
+
+        The dict format is stable across runs: sources and sinks are dicts,
+        deny rules are sorted lists of [source, sink] pairs. This enables
+        a third party to verify a receipt was minted under a specific policy
+        by recomputing the hash of to_dict() and comparing to the receipt's
+        policy_digest field.
+
+        Returns::
+
+            {
+                "sources": {"read_webpage": "untrusted", ...},
+                "sinks": {"send_email": "egress", ...},
+                "deny": [["untrusted", "egress"], ...],
+            }
+        """
+        return {
+            "sources": dict(self._sources),
+            "sinks": dict(self._sinks),
+            "deny": sorted([list(pair) for pair in self._denied]),
+        }
+
 
 class FlowRuleDetector:
     """Blocks a tool call whose sink category is forbidden under active taints.

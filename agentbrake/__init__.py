@@ -485,12 +485,18 @@ def guard() -> Callable[[Callable[..., Any]], Callable[..., Any]]:
                         reason is InterruptReason.FLOW
                         and active.flow_detector is not None
                     ):
+                        policy_digest_value = (
+                            receipts.policy_digest(active.flow_policy.to_dict())
+                            if active.flow_policy is not None
+                            else None
+                        )
                         receipts.mint_flow_override_receipt(
                             active.flow_ledger,
                             run_state=active.state,
                             sink_call=call,
                             flow=context["flow"],
                             interrupt_id=approved_id,
+                            policy_digest_value=policy_digest_value,
                         )
                     # Carry on down the detector list rather than breaking out.
                     # The human approved *this* violation; they were never shown
@@ -502,11 +508,17 @@ def guard() -> Callable[[Callable[..., Any]], Callable[..., Any]]:
                 # — a verifiable proof that this attack was stopped, here, on
                 # this call — and attach it to the interrupt.
                 if reason is InterruptReason.FLOW and active.flow_detector is not None:
+                    policy_digest_value = (
+                        receipts.policy_digest(active.flow_policy.to_dict())
+                        if active.flow_policy is not None
+                        else None
+                    )
                     flow_row = receipts.mint_flow_receipt(
                         active.flow_ledger,
                         run_state=active.state,
                         sink_call=call,
                         flow=context["flow"],
+                        policy_digest_value=policy_digest_value,
                     )
                     context["receipt"] = receipts.receipt_summary(flow_row)
                 if (

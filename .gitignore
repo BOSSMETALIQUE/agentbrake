@@ -41,3 +41,5 @@ Thumbs.db
 scripts/
 outreach_candidates.md
 outreach.md
+# ZK design spike artifacts (experiments/, not part of the package)
+experiments/_zk_artifacts/
