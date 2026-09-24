@@ -10,7 +10,7 @@
 
 > 🇪🇺 **EU AI Act — August 2, 2026.** High-risk system obligations are now enforceable, with penalties up to 7% of global turnover. Auditors expect *demonstrable* runtime controls — not written policies. AgentBrake produces cryptographic proof of every enforcement decision, verifiable offline by a third party with only the public key. See [Security coverage](#security-coverage---owasp-top-10-for-agentic-applications-2026).
 
-> **⚡ Status:** v0.3.0 — On PyPI (`pip install py-agentbrake`). Local mode is stable (211/211 tests passing). Every enforcement decision — human approvals, autonomous flow blocks, and delegation violations — produces a **signed, hash-chained receipt** a third party verifies offline with the standalone `agentbrake verify` CLI (see [Verifiable receipts](#verifiable-receipts)). A **flow-control engine with taint tracking** stops prompt-injection → exfiltration (see [Flow control](#flow-control-taint-tracking)), and **signed delegation tokens** carry the original user intent across agent hops (see [Delegation](#delegation-inter-agent-trust)). Looking for early users to validate the API.
+> Status: v0.3.1 — On PyPI (pip install py-agentbrake). Local mode is stable (240/240 tests passing). Every enforcement decision — human approvals, autonomous flow blocks, and delegation violations — produces a **signed, hash-chained receipt** a third party verifies offline with the standalone `agentbrake verify` CLI (see [Verifiable receipts](#verifiable-receipts)). A **flow-control engine with taint tracking** stops prompt-injection → exfiltration (see [Flow control](#flow-control-taint-tracking)), and **signed delegation tokens** carry the original user intent across agent hops (see [Delegation](#delegation-inter-agent-trust)). Looking for early users to validate the API.
 
 ## The problem
 
@@ -37,7 +37,7 @@ def call_tool(name: str, args: dict):
     return my_tools[name](**args)
 ```
 
-That's it. If your agent loops, blows the budget, or tries to call something outside the allowlist, `call_tool` raises `AgentBrakeInterrupt` 🛑 instead of executing.
+That's it. If your agent loops, blows the budget, or tries to call something outside the allowlist, `call_tool` raises `AgentBrakeInterrupt`  instead of executing.
 
 For long-lived processes that launch many agent tasks, give each task its own isolated run — fresh budget, fresh call history, nothing leaks from one run to the next (runs in separate threads or asyncio tasks are isolated too):
 
