@@ -129,12 +129,18 @@ Full evidence, with file and line references, is in
 
 | Framework | Pre-exec hook? | Hard-stops the run? | Native flow control | MCP description checked |
 |---|---|---|---|---|
-| LangChain v1 / LangGraph | ✅ `wrap_tool_call` | ✅ but only by raising | ❌ | ❌ |
-| Pydantic AI | ✅ `WrapperToolset.call_tool` | ✅ raise | ❌ | ❌ |
-| OpenAI Agents SDK | ✅ `ToolInputGuardrail` | ✅ `raise_exception` | ❌ | ❌ (names only) |
-| CrewAI | ✅ `before_tool_call` | ⚠️ documented abort is a soft deny | ❌ | ❌ |
-| AG2 1.x | ✅ `ToolMiddleware` | ⚠️ soft deny by design | ❌ | ❌ |
+| LangChain v1 / LangGraph | ✅ `wrap_tool_call` | ✅ but only by raising — *verified by execution* | ❌ | ❌ |
+| Pydantic AI | ✅ `WrapperToolset.call_tool` | raise — *not verified by execution* † | ❌ | ❌ |
+| OpenAI Agents SDK | ✅ `ToolInputGuardrail` | ✅ `raise_exception` — *read from the enforcement path* | ❌ | ❌ (names only) |
+| CrewAI | ✅ `before_tool_call` | ⚠️ documented abort is a soft deny — *read from the enforcement path* | ❌ | ❌ |
+| AG2 1.x | ✅ `ToolMiddleware` | ⚠️ soft deny by design; raise-to-halt *not verified by execution* † | ❌ | ❌ |
 | Microsoft AutoGen 0.7 | ❌ none | — | ❌ | ❌ |
+
+† **Pydantic AI and AG2 were not exercised end to end.** Their raise-to-halt path is
+read off the code, not observed in a run — unlike LangGraph (measured, §4.2) and
+CrewAI / the OpenAI SDK (traced through the enforcement path). Treat those two cells
+as plausible and unconfirmed; verify against your own version before you depend on
+them.
 
 Read generously, this is a story of **good plumbing and a missing policy**. The
 OpenAI SDK's tool guardrails are purpose-built for vetting tool calls. Pydantic
@@ -433,16 +439,22 @@ the record of one block without breaking every link after it.
 
 The hook to use, per framework:
 
-| Framework | Attach the check here | Attach taint recording here |
-|---|---|---|
-| LangChain v1 / LangGraph | `wrap_tool_call` (**raise** to halt) | same hook, after `handler(request)` |
-| Pydantic AI | subclass `WrapperToolset`, override `call_tool` | same method, after `super()` |
-| OpenAI Agents SDK | `@tool_input_guardrail` (`raise_exception`) | `RunHooks.on_tool_end` |
-| CrewAI | `@before_tool_call` (raise your own exception, **not** `HookAborted`) | `@after_tool_call` |
-| AG2 1.x | a `ToolMiddleware`, before `call_next` | same middleware, after `call_next` |
-| Microsoft AutoGen 0.7 | wrap the `Workbench` ABC | same `call_tool` |
+| Framework | Attach the check here | Attach taint recording here | Halt path |
+|---|---|---|---|
+| LangChain v1 / LangGraph | `wrap_tool_call` (**raise** to halt) | same hook, after `handler(request)` | verified by execution |
+| Pydantic AI | subclass `WrapperToolset`, override `call_tool` | same method, after `super()` | **not verified by execution** |
+| OpenAI Agents SDK | `@tool_input_guardrail` (`raise_exception`) | `RunHooks.on_tool_end` | read from the enforcement path |
+| CrewAI | `@before_tool_call` (raise your own exception, **not** `HookAborted`) | `@after_tool_call` | read from the enforcement path |
+| AG2 1.x | a `ToolMiddleware`, before `call_next` | same middleware, after `call_next` | **not verified by execution** |
+| Microsoft AutoGen 0.7 | wrap the `Workbench` ABC | same `call_tool` | not verified |
 
-Three notes carried over from the survey, each verified:
+On **Pydantic AI** and **AG2**, confirm the halt yourself before relying on it: write
+the equivalent of this article's demo — a scripted model that *retries* the blocked
+call — and check the hook fires once, not twice. Twice means you have a soft deny.
+AG2's own `ApprovalRequired` refuses by returning a result event rather than raising,
+so soft deny is the house style there and the raise path is the deviation.
+
+Three notes carried over from the survey, each read off the enforcement path:
 
 * **CrewAI:** raising `HookAborted` gives you a soft deny. Raise a *different*
   exception to get a hard stop — only `HookAborted` is caught at the dispatch site,
