@@ -196,14 +196,19 @@ class FlowPolicy:
 class FlowRuleDetector:
     """Blocks a tool call whose sink category is forbidden under active taints.
 
-    Two hooks, because taint is produced after a source runs but a sink must be
-    stopped before it runs:
+    Two hooks, because a taint is recorded once its source call has been
+    attempted but a sink has to be stopped before it runs:
 
     * :meth:`check` (pre-execution, in the guard detector loop) trips the brake
-      when the call about to run is a sink fed by a denied, currently-active
-      taint.
-    * :meth:`apply_taint` (post-execution) marks the taint a source call just
-      introduced, so later sinks see it.
+      when the call about to run is a sink fed by a denied taint. The taints it
+      weighs are the ones already active *plus* the label this very call would
+      introduce, so a tool declared as both source and sink — a generic
+      ``http_request``, an MCP proxy — is refused on its first call instead of
+      egressing once and tainting only afterwards.
+    * :meth:`apply_taint` (post-attempt) records the taint a source call
+      introduced, so later sinks see it. It runs whether the call returned or
+      raised: nothing proves a read that failed ingested nothing, so a source
+      taints the run on attempt, not on success.
     """
 
     def __init__(self, policy: FlowPolicy):
