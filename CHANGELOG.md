@@ -20,9 +20,9 @@ Documentation and examples only — no change to package behavior.
   everywhere, the integration tests skip without `langchain`/`langgraph` installed.
 - **Research notes** (`docs/research/framework-security-map.md`): a cited survey of how LangGraph,
   CrewAI, AutoGen, AG2, the OpenAI Agents SDK and Pydantic AI handle untrusted-input → egress flows.
-  None implements taint tracking; all pass MCP tool descriptions to the model unvalidated. Includes
-  the per-framework hook AgentBrake attaches to, and a draft write-up
-  (`docs/research/writeup-draft.md`).
+  None of them ships native taint tracking in the versions reviewed, and all pass MCP tool
+  descriptions to the model without an integrity check. Includes the per-framework hook AgentBrake
+  attaches to, and a draft write-up (`docs/research/writeup-draft.md`).
 
 ### Fixed
 - README cited the EU AI Act high-risk obligations as enforceable from 2 August 2026 with penalties
@@ -37,6 +37,8 @@ Documentation and examples only — no change to package behavior.
   a tool declared as both source and sink is refused on its first call.
 - `FileKeyStore` docstring claimed it auto-generates a key when the file is absent;
   `load_private_key()` raises `FileNotFoundError`. Docstring corrected — no behavior change.
+- A type annotation on a local dict in `agentbrake/__init__.py` so `mypy agentbrake` passes in CI.
+  No runtime effect.
 
 ## [0.3.1] - 2026-09-23
 

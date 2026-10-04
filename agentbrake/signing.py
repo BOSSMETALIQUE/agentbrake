@@ -278,8 +278,16 @@ class FileKeyStore:
     """PEM file storage for Ed25519 keys — persisted to disk.
 
     Standard deployment: keys live in AGENTBRAKE_SIGNING_KEY_FILE (PEM format).
-    On first load, auto-generates a key if the file doesn't exist (development).
-    In production, pre-provision the key file so it is never regenerated.
+
+    Nothing here generates a key. :meth:`load_private_key` raises
+    ``FileNotFoundError`` when the file is absent, so a missing key is a loud
+    failure rather than a silently new identity — a regenerated key would change
+    ``key_id`` and strand every receipt already signed under the old one. To
+    provision, generate a key yourself (``agentbrake keygen``, or
+    :meth:`Ed25519Signer.generate`) and persist it with
+    :meth:`save_private_key`; guard with :meth:`key_exists` to avoid overwriting
+    one. The key is written as unencrypted PKCS#8, so the file's permissions are
+    what protects it.
     """
 
     def __init__(self, path: str):
