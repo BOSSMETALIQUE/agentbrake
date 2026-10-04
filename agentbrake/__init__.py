@@ -6,7 +6,7 @@ import functools
 import os
 import sys
 from contextvars import ContextVar, Token
-from typing import Any, Callable, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from . import delegation, receipts, signing
 from .client import AgentBrakeClient
@@ -525,7 +525,10 @@ def guard() -> Callable[[Callable[..., Any]], Callable[..., Any]]:
                                  InterruptReason.ESCALATION, InterruptReason.TIMEOUT):
                     # Mint receipts for detector blocks (loop/budget/escalation/timeout).
                     # Context includes run state summary for auditing.
-                    detector_context = {
+                    # Annotated because the values are heterogeneous: mypy would
+                    # otherwise infer dict[str, float] from these two entries and
+                    # reject the list[str] added for a loop block below.
+                    detector_context: Dict[str, Any] = {
                         "total_cost_usd": active.state.total_cost_usd,
                         "call_count": len(active.state.calls),
                     }
