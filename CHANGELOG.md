@@ -6,6 +6,90 @@ All notable changes to AgentBrake are documented here. Format follows
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-10-04
+
+Documentation and examples only — no change to package behavior.
+
+### Added
+- **LangGraph flow-control example** (`examples/08_langgraph_flow_middleware.py`): AgentBrake wired
+  into a real LangGraph agent through LangChain v1's `wrap_tool_call` middleware hook, blocking the
+  prompt-injection → exfiltration flow and minting a verifiable receipt. Runs with no API key and no
+  network: the model is a scripted stand-in, the "poisoned page" a local string. A second part
+  demonstrates how `ToolNode(handle_tool_errors=True)` silently demotes an exception-based breaker to
+  advisory. Covered by `tests/test_langgraph_middleware.py` in two tiers — the policy tests run
+  everywhere, the integration tests skip without `langchain`/`langgraph` installed.
+- **Research notes** (`docs/research/framework-security-map.md`): a cited survey of how LangGraph,
+  CrewAI, AutoGen, AG2, the OpenAI Agents SDK and Pydantic AI handle untrusted-input → egress flows.
+  None implements taint tracking; all pass MCP tool descriptions to the model unvalidated. Includes
+  the per-framework hook AgentBrake attaches to, and a draft write-up
+  (`docs/research/writeup-draft.md`).
+
+### Fixed
+- README cited the EU AI Act high-risk obligations as enforceable from 2 August 2026 with penalties
+  up to 7% of global turnover. The Digital Omnibus (Regulation (EU) 2026/1744) deferred them to
+  2 December 2027 (Annex III standalone systems) and 2 August 2028 (Annex I AI embedded in regulated
+  products); the 7% ceiling applies to prohibited practices, not to high-risk obligations. Both the
+  banner and the "Why this matters now" section now state the current dates and carry no penalty
+  figure.
+- README and example documentation described flow-control taint as applied only on a successful
+  source call. Taint is applied on *attempt* — a source that raises taints the run too, since nothing
+  proves a failed read ingested nothing. The stated limitations now match the engine, including that
+  a tool declared as both source and sink is refused on its first call.
+- `FileKeyStore` docstring claimed it auto-generates a key when the file is absent;
+  `load_private_key()` raises `FileNotFoundError`. Docstring corrected — no behavior change.
+
+## [0.3.1] - 2026-09-23
+
+### Added
+- **Signed receipts for detector blocks** (`mint_detector_receipt`,
+  `build_detector_attestation`): a loop, budget or escalation block now mints a signed, hash-chained
+  receipt into the same ledger and the same format as a flow block, so an autonomous stop is as
+  provable as a human decision. The attestation carries `decision: "block"`, the detector `kind`, the
+  tool, and a context summary (cumulative cost, call count, plus the budget ceiling or the last five
+  call names). Two limits worth knowing: a **retry-storm block is recorded with kind `loop`**, because
+  `RetryStormDetector` reports `InterruptReason.LOOP` — it cannot be told apart from an exact loop in
+  the receipt; and a **remote-mode decision timeout mints no receipt**, since `TIMEOUT` is raised
+  before the minting step is reached.
+- **`policy_digest` on flow receipts**: `flow_block` and `flow_override` attestations carry a sha256
+  digest of the policy that was in force, so an auditor can tell not just that a call was blocked but
+  under which rules. Detector and delegation receipts accept the field but are not passed one, so in
+  practice only flow receipts carry it.
+- **Flow override receipts** (`mint_flow_override_receipt`): a human who *approves* a flow the engine
+  had blocked is recorded in the same chain, with the interrupt id that authorised it. A ledger that
+  only ever proves "we stopped this" would leave the most audit-worthy event — an exfiltration waved
+  through — as the one thing with no trace.
+- **`KeyStore` abstraction** for Ed25519 signing keys: a `KeyStore` protocol with `InMemoryKeyStore`
+  and `FileKeyStore` (unencrypted PKCS#8 PEM) implementations, leaving room for hardware-backed
+  storage later. Not yet wired into the signing path — `resolve_signer_from_env()` still builds
+  signers directly from `AGENTBRAKE_SIGNING_KEY_FILE` / `_SEED` / the legacy HMAC secret.
+- **`FlowPolicy.validate()`**: raises on a deny rule that can never fire (a typo'd taint label or sink
+  category), called automatically when a policy is attached to a run. For a security control a silent
+  no-op is the worst failure mode, because it is indistinguishable from working.
+  **`FlowPolicy.undeclared_tools()`** warns about allow-listed tools the policy declares neither
+  source nor sink — every one is a path the flow engine cannot see.
+- arXiv research survey on agent security hardening (`docs/research/arxiv-survey.md`).
+
+### Changed
+- **Cost is accumulated in integer micro-dollars.** `ToolCall.cost_usd_micro` and
+  `RunState.total_cost_usd_micro` hold integers, so the repeated float addition that used to
+  accumulate spend can no longer drift. `cost_usd` / `total_cost_usd` remain as float property views
+  (with setters), and a float `cost_usd=` keyword is still accepted and converted, so existing code
+  keeps working. Note the ceiling *comparison* in `BudgetDetector.check` is still performed in
+  floats — the integer accounting removes cumulative drift, not the final float compare.
+
+### Fixed
+- **Two taint-tracking bypasses in the flow engine.** Taint is now applied on *attempt* rather than on
+  success: a source tool that fetched attacker-controlled content and then raised has still ingested
+  it, and an agent loop will hand the exception text — which can carry that content — back to the
+  model, so nothing proves a failed read was harmless. And a tool declared as *both* source and sink
+  (a generic `http_request`, an MCP proxy) is now checked against the taint it would introduce itself,
+  so it is refused on its first call instead of egressing once and tainting only afterwards.
+- **Approvals are bound to the action they approve.** The interrupt context now carries a
+  `pending_call` with the tool, its arguments, and an `args_digest`; the approver echoes the digest
+  back and the server rejects a decision whose digest does not match the pending call. Previously an
+  approver saw only a tool *name* — approving `send_email` without sight of `to=attacker@evil.com` —
+  because the pending call is appended to the run state only after the detectors pass.
+
 ## [0.3.0] - 2026-09-08
 
 ### Added
@@ -83,7 +167,9 @@ All notable changes to AgentBrake are documented here. Format follows
   the guarded agent process cannot approve its own interruption.
 - Signed, hash-chained attestations for human approve/kill decisions.
 
-[Unreleased]: https://github.com/BOSSMETALIQUE/agentbrake/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/BOSSMETALIQUE/agentbrake/compare/v0.3.2...HEAD
+[0.3.2]: https://github.com/BOSSMETALIQUE/agentbrake/compare/v0.3.1...v0.3.2
+[0.3.1]: https://github.com/BOSSMETALIQUE/agentbrake/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/BOSSMETALIQUE/agentbrake/compare/v0.2.4...v0.3.0
 [0.2.4]: https://github.com/BOSSMETALIQUE/agentbrake/compare/v0.2.3...v0.2.4
 [0.2.3]: https://github.com/BOSSMETALIQUE/agentbrake/compare/v0.2.2...v0.2.3
