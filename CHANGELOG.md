@@ -6,6 +6,31 @@ All notable changes to AgentBrake are documented here. Format follows
 
 ## [Unreleased]
 
+### Added
+- **Argument-level flow exemptions** — `FlowPolicy.allow_args(tool, fields=..., values=..., domains=...,
+  other_fields=...)`. Fixes the false positive where "read this page and email me a summary" was
+  blocked by `block_exfiltration`: after an untrusted read, a send now passes only if every recipient
+  in every declared field is an allow-listed address (or on an allow-listed domain, exact match).
+  Deterministic and fail-closed: an undeclared argument, a value that is not a string or list of
+  strings, a call with no recipient, or anything that is not one plain ASCII `local@domain` (display
+  names, comma-joined lists, `%`/`!` relays, quoted local parts, homoglyphs, CR/LF) blocks. No regexes.
+  `validate()` rejects an exemption on a tool that is not a declared sink; the builder rejects empty
+  allow-lists, malformed entries, bare strings where a list is expected, overlapping fields, and a
+  second exemption for the same tool. Without `allow_args`, behavior and `policy_digest` are
+  unchanged.
+- **`flow_allow` receipts** (`decision="allow_by_policy"`): every send let through by an exemption is
+  signed into the same hash chain as blocks, with the call's `tool_args_digest`; the exemption is
+  serialized into `FlowPolicy.to_dict()`, so `policy_digest` commits to the exact allow-list. Minted
+  only once every detector has passed. The compliance report counts them separately
+  (`summary.flow_allows`) instead of as human decisions.
+- A blocked send's interrupt names the value that broke the exemption
+  (`e.context["flow"]["exemption"]`: `field`, `value`, `value_digest`, `reason`); the signed receipt
+  keeps the digest, never the raw value (`receipts.flow_for_receipt`).
+- `examples/09_allow_owner_email.py`: the owner gets the summary, `attacker@evil.com` and a hidden
+  `bcc` are blocked, three receipts verify. Covered by `tests/test_flow_allow_args.py`.
+- Research notes: `docs/research/argument-level-flow.md` (CaMeL, FIDES, Progent, Invariant, PACT;
+  why prompt-derived provenance was evaluated and not shipped).
+
 ## [0.3.2] - 2026-10-04
 
 Documentation and examples only — no change to package behavior.

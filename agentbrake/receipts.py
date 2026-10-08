@@ -150,6 +150,24 @@ def policy_digest(policy: Dict[str, Any]) -> str:
     return _digest(policy)
 
 
+def flow_for_receipt(flow: Dict[str, Any]) -> Dict[str, Any]:
+    """The flow payload as it may be signed: offending values by digest only.
+
+    ``explain()`` names the value that broke an ``allow_args`` exemption
+    (``bcc=attacker@evil.com``) so the operator can act on it. A receipt is
+    meant to be safe to hand to anyone, and a "recipient" may be the stolen
+    data itself, so the raw value is dropped here; ``value_digest`` still
+    commits to it. Payloads without a failed exemption are returned as is,
+    byte-identical to what earlier versions signed.
+    """
+    exemption = flow.get("exemption")
+    if not isinstance(exemption, dict) or "value" not in exemption:
+        return flow
+    redacted = dict(flow)
+    redacted["exemption"] = {k: v for k, v in exemption.items() if k != "value"}
+    return redacted
+
+
 def build_flow_attestation(
     *,
     seq: int,
@@ -302,6 +320,41 @@ def mint_flow_override_receipt(
             kind="flow_override",
             decision="approve",
             interrupt_id=interrupt_id,
+            policy_digest_value=policy_digest_value,
+        ),
+    )
+
+
+def mint_flow_allow_receipt(
+    ledger: Ledger,
+    *,
+    run_state: RunState,
+    sink_call: ToolCall,
+    flow: Dict[str, Any],
+    agent_id: Optional[str] = None,
+    policy_digest_value: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Receipt for a denied flow the *policy* let through (``allow_args``).
+
+    Same reasoning as an override, without a human: a tainted egress that the
+    engine waved through on an argument exemption is precisely what an
+    auditor needs to be able to enumerate, so it is chained like a block.
+    ``tool_args_digest`` binds the exact call that ran, and ``policy_digest``
+    the exact allow-list that justified it (``FlowPolicy.to_dict()`` embeds
+    the exemptions).
+    """
+    return _seal_and_append(
+        ledger,
+        lambda seq, prev_hash, chain_id: build_flow_attestation(
+            seq=seq,
+            prev_hash=prev_hash,
+            run_id=run_state.run_id,
+            sink_call=sink_call,
+            flow=flow,
+            chain_id=chain_id,
+            agent_id=agent_id,
+            kind="flow_allow",
+            decision="allow_by_policy",
             policy_digest_value=policy_digest_value,
         ),
     )
