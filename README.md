@@ -173,11 +173,30 @@ python examples/06_verifiable_audit_trail.py
 
 This stages the attack, blocks it twice, exports the signed receipt bundle, verifies it offline with a pinned public key, **tampers with a copy and shows verification fail**, produces a single-receipt inclusion proof, and generates the compliance report, with every artifact landing in `./demo_output/`.
 
+### Letting the user's own address through (`allow_args`)
+
+A tool-level rule cannot tell *who* a mail goes to, so "read this page and email me a summary" is blocked like an attack. An argument-level exemption lets a denied flow through **only** when every recipient is on a fixed allow-list:
+
+```python
+policy = block_exfiltration(["read_webpage"], ["send_email"]).allow_args(
+    "send_email",
+    fields=["to", "cc", "bcc"],          # every recipient field the tool accepts
+    values=["moi@example.com"],          # exact addresses (and/or domains=["corp.example"])
+    other_fields=["subject", "body"],    # allowed to be present, not inspected
+)
+```
+
+After a web read, `send_email(to="moi@example.com")` runs and mints a signed `flow_allow` receipt; `to=attacker@evil.com`, `to=[me, attacker]` and `to=me` + `bcc=attacker` are blocked, and the interrupt names the offending value (`bcc=attacker@evil.com`; the signed receipt keeps only its digest). The check is deterministic and fail-closed: any undeclared argument, a value that is not a string or list of strings, a call with no recipient, or anything that is not one plain ASCII `local@domain` (display names, comma-joined lists, `%`/`!` relays, homoglyphs, CR/LF) blocks. The allow-list is part of `policy_digest`. Runnable: [`examples/09_allow_owner_email.py`](examples/09_allow_owner_email.py). Design and sources: [`docs/research/argument-level-flow.md`](docs/research/argument-level-flow.md).
+
+For per-user agents, build the policy per run from the authenticated user's address (session, directory), never from the prompt.
+
 ### Limitations (read these)
 
 Flow control is a strong, cheap layer, not a sandbox. Its guarantees are honest and bounded:
 
-- **Taint is monotonic.** Once `untrusted` is active it is never cleared, so *every* later egress is blocked. This is deliberately conservative (there is no reliable way to "sanitize" attacker content mid-run), but a long-lived agent that legitimately reads untrusted data and *then* sends unrelated trusted data will be stopped. Use a fresh `run()` per task.
+- **Taint is monotonic.** Once `untrusted` is active it is never cleared, so *every* later egress is blocked. This is deliberately conservative (there is no reliable way to "sanitize" attacker content mid-run), but a long-lived agent that legitimately reads untrusted data and *then* sends unrelated trusted data will be stopped. Use a fresh `run()` per task, and `allow_args` for sends whose destination you can name in advance.
+- **Taint is per run, not per value.** The engine does not know *which* data a call carries, only that the run has seen untrusted input. `allow_args` relaxes a denied flow by destination (fixed recipients), not by provenance: it cannot tell that an address came from the user rather than from the page, and it does not inspect content. An injected sentence still reaches the allowed recipient, and an HTML body with remote images can leak data when the recipient opens it; have the tool send plain text. Value-level provenance (CaMeL, FIDES) needs control of the agent's planner, which a tool-boundary guard does not have.
+- **Recipient checks are only as complete as your field list.** `allow_args` blocks undeclared arguments, but a destination hidden in a field you declared in `other_fields` is not checked. Domain matchers trust everyone who can get an address on that domain; prefer exact addresses.
 - **Granularity is the tool call.** A tool declared as both a source and a sink is checked against the taint it would introduce itself, so it is blocked on its first call instead of sending data out once and tainting the run afterwards. What the engine still cannot see is a single call that ingests and egresses under a name you declared as only one of the two roles. Keep sources and sinks separate.
 - **Taint is applied on attempt, not on success.** A source call taints the run even when it raises: a read that failed after fetching may still have ingested the content, and agent loops often feed the exception text back to the model. The cost is that a flaky fetch closes egress for the rest of the run, which is the safe direction to fail in.
 - **Only declared paths are seen.** If the agent reaches a sink through a tool you never declared, the flow engine can't see it. Declare every egress path, and keep the allow-list as the hard boundary underneath.
@@ -337,7 +356,7 @@ Two layers of tamper-evidence:
 
 Only digests of the tool call and the displayed info are stored, never raw arguments, so a receipt is safe to expose while still binding the decision to exactly what was acted on. (A digest is a *commitment*: it proves the decision was made on specific data, but opening that commitment later requires whoever archived the raw context to produce it.)
 
-Flow receipts (blocks and overrides) also carry a digest of the policy that was in force, so an auditor can tell not just that a call was blocked but under which rules. Loop, budget, escalation and delegation receipts do not carry a policy digest yet. The package also ships a `KeyStore` interface (in-memory and file-based implementations) as groundwork for hardware-backed key storage, but it is not wired into the signing path yet: signing keys are still resolved from the environment (`AGENTBRAKE_SIGNING_KEY_FILE`, `AGENTBRAKE_SIGNING_SEED`).
+Flow receipts (blocks, overrides, and `flow_allow` rows for sends an `allow_args` exemption let through) also carry a digest of the policy that was in force, exemptions included, so an auditor can tell not just that a call was blocked but under which rules. Loop, budget, escalation and delegation receipts do not carry a policy digest yet. The package also ships a `KeyStore` interface (in-memory and file-based implementations) as groundwork for hardware-backed key storage, but it is not wired into the signing path yet: signing keys are still resolved from the environment (`AGENTBRAKE_SIGNING_KEY_FILE`, `AGENTBRAKE_SIGNING_SEED`).
 
 ### Give your auditor a bundle, not your word
 
@@ -502,6 +521,7 @@ Design and research write-ups live in the repo, including their own caveats:
 
 - [`docs/research/framework-security-map.md`](docs/research/framework-security-map.md): how popular agent frameworks expose a pre-execution hook, and where native flow control is missing. Each claim is marked with how it was checked (run, read from the code path, or not verified).
 - [`docs/research/arxiv-survey.md`](docs/research/arxiv-survey.md): a survey of recent agent-security papers and what was and was not adopted.
+- [`docs/research/argument-level-flow.md`](docs/research/argument-level-flow.md): CaMeL, FIDES, Progent, Invariant and PACT compared on argument-level flow control; why `allow_args` is an exact allow-list and why provenance from the user's prompt was not shipped.
 - [`docs/design/zk-receipts.md`](docs/design/zk-receipts.md): a design spike on zero-knowledge receipts, including why they do not fix the compromised-host case and where they would actually help.
 
 ## Why AgentBrake vs LangSmith / Helicone / AgentOps

@@ -14,6 +14,7 @@ detail; this table is the index.
 | [`05_prompt_injection_exfiltration.py`](05_prompt_injection_exfiltration.py) | Flow control (taint tracking) stops a prompt-injection → exfiltration attack | None — self-contained, no API key, no server | `python examples/05_prompt_injection_exfiltration.py` |
 | [`06_verifiable_audit_trail.py`](06_verifiable_audit_trail.py) | Full pipeline: attack → block → signed receipts → export → offline verify → tamper detection → compliance report | None — self-contained, no API key, no server | `python examples/06_verifiable_audit_trail.py` |
 | [`07_cometapi_cost_tracking.py`](07_cometapi_cost_tracking.py) | Real token-based LLM cost tracking via the CometAPI provider, wired into `BudgetDetector` | `COMETAPI_KEY` in `.env` ([get one](https://www.cometapi.com)), `pip install py-agentbrake[cometapi]` | `python examples/07_cometapi_cost_tracking.py` |
+| [`09_allow_owner_email.py`](09_allow_owner_email.py) | `allow_args`: after an untrusted read, the owner's email goes through (signed `flow_allow` receipt) while `attacker@evil.com` and a hidden `bcc` are blocked | None — self-contained, no API key, no server | `python examples/09_allow_owner_email.py` |
 | [`demo_auto.py`](demo_auto.py) | Unattended end-to-end run of demos 01–04 (local breakers + remote auto-approve), used for screen recordings | Same as 01–04 | `python examples/demo_auto.py` |
 
 `_shared.py` holds helpers common to the LangGraph-based demos (env loading, agent scaffolding, output formatting) — not runnable on its own.

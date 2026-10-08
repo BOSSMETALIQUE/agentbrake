@@ -362,6 +362,13 @@ def _build_context(active: Run, call: ToolCall) -> dict:
     }
 
 
+def _flow_policy_digest(active: Run) -> Optional[str]:
+    """Digest binding a flow receipt to the policy (and exemptions) in force."""
+    if active.flow_policy is None:
+        return None
+    return receipts.policy_digest(active.flow_policy.to_dict())
+
+
 def _handle_remote_interrupt(
     active: Run,
     reason: InterruptReason,
@@ -485,18 +492,13 @@ def guard() -> Callable[[Callable[..., Any]], Callable[..., Any]]:
                         reason is InterruptReason.FLOW
                         and active.flow_detector is not None
                     ):
-                        policy_digest_value = (
-                            receipts.policy_digest(active.flow_policy.to_dict())
-                            if active.flow_policy is not None
-                            else None
-                        )
                         receipts.mint_flow_override_receipt(
                             active.flow_ledger,
                             run_state=active.state,
                             sink_call=call,
-                            flow=context["flow"],
+                            flow=receipts.flow_for_receipt(context["flow"]),
                             interrupt_id=approved_id,
-                            policy_digest_value=policy_digest_value,
+                            policy_digest_value=_flow_policy_digest(active),
                         )
                     # Carry on down the detector list rather than breaking out.
                     # The human approved *this* violation; they were never shown
@@ -508,17 +510,12 @@ def guard() -> Callable[[Callable[..., Any]], Callable[..., Any]]:
                 # — a verifiable proof that this attack was stopped, here, on
                 # this call — and attach it to the interrupt.
                 if reason is InterruptReason.FLOW and active.flow_detector is not None:
-                    policy_digest_value = (
-                        receipts.policy_digest(active.flow_policy.to_dict())
-                        if active.flow_policy is not None
-                        else None
-                    )
                     flow_row = receipts.mint_flow_receipt(
                         active.flow_ledger,
                         run_state=active.state,
                         sink_call=call,
-                        flow=context["flow"],
-                        policy_digest_value=policy_digest_value,
+                        flow=receipts.flow_for_receipt(context["flow"]),
+                        policy_digest_value=_flow_policy_digest(active),
                     )
                     context["receipt"] = receipts.receipt_summary(flow_row)
                 elif reason in (InterruptReason.LOOP, InterruptReason.BUDGET,
@@ -567,6 +564,22 @@ def guard() -> Callable[[Callable[..., Any]], Callable[..., Any]]:
 
                 active.state.status = "interrupted"
                 raise AgentBrakeInterrupt(reason, context=context)
+
+            # Every detector has passed, so the call will run. If it is a
+            # denied flow that an allow_args exemption let through, chain that
+            # fact now: minted here rather than inside the detector loop, a
+            # later loop/budget block cannot leave a receipt claiming that a
+            # call which never ran was allowed.
+            if active.flow_detector is not None:
+                allowed_flow = active.flow_detector.allowed_by_policy(active.state, call)
+                if allowed_flow is not None:
+                    receipts.mint_flow_allow_receipt(
+                        active.flow_ledger,
+                        run_state=active.state,
+                        sink_call=call,
+                        flow=allowed_flow,
+                        policy_digest_value=_flow_policy_digest(active),
+                    )
 
             # Record the attempt BEFORE executing so a failing tool still
             # counts toward loop detection and budget — otherwise an agent

@@ -44,8 +44,11 @@ without notice.
 
 | Symbol | What it is |
 |---|---|
-| `FlowPolicy` | Declares taint sources, sinks, and denied `(taint, sink category)` pairs. Buildable fluently via `.source()` / `.sink()` / `.deny_flow()`. |
-| `FlowRuleDetector` | The detector that enforces a `FlowPolicy` against a run's active taints. |
+| `FlowPolicy` | Declares taint sources, sinks, and denied `(taint, sink category)` pairs. Buildable fluently via `.source()` / `.sink()` / `.deny_flow()`, plus `.allow_args()` for argument-level exemptions. |
+| `FlowPolicy.allow_args(tool, *, fields, values=(), domains=(), other_fields=())` | Let a denied flow into sink `tool` through only when every recipient in `fields` is an allow-listed address (`values`) or on an allow-listed domain (`domains`, exact match). Any other argument must be listed in `other_fields` (not inspected) or the call blocks. Fail-closed; serialized into `to_dict()`. See [allow_args](../README.md#letting-the-users-own-address-through-allow_args). |
+| `ArgExemption` | The frozen rule `allow_args` builds; `evaluate(args)` returns `(True, summary)` or `(False, failure)` naming the offending field, value and reason. |
+| `normalize_address(value)` | Canonical form (trimmed, lowercased) of one bare ASCII `local@domain`; raises `ValueError` on anything else. |
+| `FlowRuleDetector` | The detector that enforces a `FlowPolicy` against a run's active taints. `allowed_by_policy(state, call)` returns the receipt payload when an exemption lets a denied flow through. |
 | `block_exfiltration(untrusted_readers, egress_tools)` | Convenience constructor for the canonical prompt-injection → exfiltration policy. |
 
 ## `agentbrake.delegation`
@@ -73,6 +76,8 @@ See [Delegation limitations](../README.md#limitations-read-these-1) for what a t
 | `InMemoryLedger` | Per-run, in-process chain; lost when the process exits (the `run()` default). |
 | `JsonlLedger` | File-backed chain, one JSON object per line, for durable receipts (`run(receipts_path=...)`). |
 | `mint_flow_receipt(...)` | Build, sign, and append a flow-block attestation. |
+| `mint_flow_override_receipt(...)`, `mint_flow_allow_receipt(...)` | Same chain, for a flow a human approved (`flow_override`) or an `allow_args` exemption let through (`flow_allow`, `decision="allow_by_policy"`). |
+| `flow_for_receipt(flow)` | The flow payload as signed: an exemption's offending `value` is dropped, its `value_digest` kept. |
 | `mint_delegation_receipt(...)` | Build, sign, and append a delegation-event attestation. |
 | `build_flow_attestation(...)`, `build_delegation_attestation(...)` | Lower-level attestation builders behind the `mint_*` helpers. |
 | `sink_call_digest(call)` | Digest binding a receipt to the blocked call, without exposing raw args. |

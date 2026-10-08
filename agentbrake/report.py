@@ -128,6 +128,9 @@ def build_report(
     # auditor most needs to find: an exfiltration the engine caught and a
     # person let through anyway.
     flow_overrides = [e for e in events if e["kind"] == "flow_override"]
+    # A tainted egress the policy itself let through (allow_args). Neither a
+    # block nor a human decision; counted apart so it can be enumerated.
+    flow_allows = [e for e in events if e["kind"] == "flow_allow"]
     delegation_blocks = [e for e in events if e["kind"] == "delegation_block"]
     delegation_lifecycle = [
         e for e in events if e["kind"] in _DELEGATION_LIFECYCLE_KINDS
@@ -136,13 +139,15 @@ def build_report(
         e for e in events
         if e["kind"] not in _BLOCK_KINDS
         and e["kind"] not in _DELEGATION_LIFECYCLE_KINDS
-        and e["kind"] != "flow_override"
+        and e["kind"] not in ("flow_override", "flow_allow")
     ]
     kills = [e for e in human if e["decision"] == "kill"]
     approvals = [e for e in human if e["decision"] == "approve"]
 
     by_reason: Dict[str, int] = {}
     for e in events:
+        if e["kind"] == "flow_allow":
+            continue  # not a risk detected and acted on: the policy sanctioned it
         by_reason[e["reason"]] = by_reason.get(e["reason"], 0) + 1
 
     decision_times = [
@@ -170,6 +175,7 @@ def build_report(
             "human_kills": len(kills),
             "human_approvals": len(approvals),
             "flow_overrides": len(flow_overrides),
+            "flow_allows": len(flow_allows),
             "delegations_granted": len(
                 [e for e in delegation_lifecycle if e["kind"] == "delegation_grant"]
             ),
@@ -186,6 +192,7 @@ def build_report(
         },
         "flow_blocks": flow_blocks,
         "flow_overrides": flow_overrides,
+        "flow_allows": flow_allows,
         "delegation_blocks": delegation_blocks,
         "delegation_lifecycle": delegation_lifecycle,
         "human_decisions": human,
@@ -301,6 +308,11 @@ def render_markdown(report: Dict[str, Any]) -> str:
     out(f"- **{summary['autonomous_blocks']}** attack flow(s) blocked automatically")
     out(f"- **{summary['human_kills']}** run(s) stopped by a human reviewer")
     out(f"- **{summary['human_approvals']}** interrupt(s) reviewed and approved by a human")
+    if summary.get("flow_allows"):
+        out(
+            f"- **{summary['flow_allows']}** tainted send(s) allowed by a policy "
+            "exemption (allow-listed recipients)"
+        )
     if summary["mean_decision_seconds"] is not None:
         out(
             f"- Human response time: mean **{summary['mean_decision_seconds']}s**, "
@@ -333,6 +345,31 @@ def render_markdown(report: Dict[str, Any]) -> str:
                 out(f"- Run: `{event['run_id']}`{agent}")
             out(f"- Evidence: {_fmt_ref(event['evidence'])}")
             out("")
+
+    # --- flows allowed by an argument exemption ---
+    if report.get("flow_allows"):
+        out("## Flows allowed by policy exemption")
+        out("")
+        out(
+            "Each send below followed untrusted input and would have been "
+            "blocked, but every recipient was on the policy's allow-list "
+            "(`allow_args`). The receipt binds the exact call (`tool_args_digest`) "
+            "and the exact allow-list (`policy_digest`)."
+        )
+        out("")
+        out("| When | Tool | Fields checked | Recipients | Evidence |")
+        out("|---|---|---|---|---|")
+        for event in report["flow_allows"]:
+            exemption = (event.get("flow") or {}).get("exemption") or {}
+            fields = ", ".join(f"`{f}`" for f in exemption.get("fields") or []) or "-"
+            out(
+                f"| {_fmt_when(event['when'])} "
+                f"| `{event['tool']}` "
+                f"| {fields} "
+                f"| {exemption.get('recipients', '-')} "
+                f"| {_fmt_ref(event['evidence'])} |"
+            )
+        out("")
 
     # --- delegation lifecycle ---
     if report["delegation_lifecycle"]:
@@ -386,6 +423,7 @@ def render_markdown(report: Dict[str, Any]) -> str:
         or report["delegation_blocks"]
         or report["delegation_lifecycle"]
         or report["human_decisions"]
+        or report.get("flow_allows")
     ):
         out("_No enforcement events in the covered period._")
         out("")
