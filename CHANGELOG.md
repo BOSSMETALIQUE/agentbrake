@@ -39,21 +39,16 @@ All notable changes to AgentBrake are documented here. Format follows
   venv; `--python`, `--venv-dir` and `--no-dedicated-venv` override it.
 - `receipts.mint_flow_observe_receipt` (kind `flow_observe`, decision
   `observe`); design note `docs/design/out-of-band-approval.md`.
-
-### Added (0.3.3 line, superseded above once released)
-- **Claude Code hook** (`agentbrake claude-code ...`, `agentbrake.integrations.claude_code_hook`): a
-  `PreToolUse` hook that runs the flow engine, the loop / retry-storm / budget detectors and the
-  receipt chain across Claude Code's one-process-per-call model. State lives per `session_id` under
-  `~/.agentbrake/claude-code/`, behind a cross-process file lock (`msvcrt` / `fcntl`). Reading
-  untrusted content (`WebFetch`, `WebSearch`, MCP tools) taints the session; afterwards a likely
-  network shell command, a `WebFetch` to an unlisted host or an MCP send asks the user (`deny` in
-  strict mode). Fail-closed on internal errors, corrupt state, invalid policy and failed imports
-  (exit code 2); the hook entry runs Python in isolated mode so a project cannot shadow the
-  package. Self-protection against the agent disabling it, signed `flow_ask` / `flow_block` /
-  `flow_allow` / `flow_override` / detector receipts, and operator commands `status`, `reset`,
-  `disable`, `enable`, `export`, `install`, `uninstall`, `print-settings`. Examples (settings
-  block, policy, plugin) in `examples/claude-code/`; research and design in
-  `docs/research/claude-code-hook.md`.
+- **Claude Code hook foundation** (`agentbrake claude-code ...`,
+  `agentbrake.integrations.claude_code_hook`): a `PreToolUse` hook that runs the flow engine, the
+  loop / retry-storm / budget detectors and the receipt chain across Claude Code's
+  one-process-per-call model. State lives per `session_id` under `~/.agentbrake/claude-code/`,
+  behind a cross-process file lock (`msvcrt` / `fcntl`). Fail-closed on internal errors, corrupt
+  state, invalid policy and failed imports (exit code 2); the hook entry runs Python in isolated
+  mode so a project cannot shadow the package. Self-protection against the agent disabling it,
+  signed receipts, and operator commands `status`, `reset`, `disable`, `enable`, `export`,
+  `install`, `uninstall`, `print-settings`. Examples (settings block, policy, plugin) in
+  `examples/claude-code/`; design notes in `docs/research/claude-code-hook.md`.
 - `receipts.mint_flow_ask_receipt`, and an optional `decision` argument on detector receipts
   (default `"block"`, unchanged output).
 
