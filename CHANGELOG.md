@@ -6,6 +6,8 @@ All notable changes to AgentBrake are documented here. Format follows
 
 ## [Unreleased]
 
+## [0.3.3] - 2026-10-09
+
 ### Added
 - **Argument-level flow exemptions** — `FlowPolicy.allow_args(tool, fields=..., values=..., domains=...,
   other_fields=...)`. Fixes the false positive where "read this page and email me a summary" was
@@ -194,7 +196,8 @@ Documentation and examples only — no change to package behavior.
   the guarded agent process cannot approve its own interruption.
 - Signed, hash-chained attestations for human approve/kill decisions.
 
-[Unreleased]: https://github.com/BOSSMETALIQUE/agentbrake/compare/v0.3.2...HEAD
+[Unreleased]: https://github.com/BOSSMETALIQUE/agentbrake/compare/v0.3.3...HEAD
+[0.3.3]: https://github.com/BOSSMETALIQUE/agentbrake/compare/v0.3.2...v0.3.3
 [0.3.2]: https://github.com/BOSSMETALIQUE/agentbrake/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/BOSSMETALIQUE/agentbrake/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/BOSSMETALIQUE/agentbrake/compare/v0.2.4...v0.3.0
