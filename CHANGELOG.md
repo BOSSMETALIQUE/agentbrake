@@ -6,6 +6,27 @@ All notable changes to AgentBrake are documented here. Format follows
 
 ## [Unreleased]
 
+### Added
+- **Claude Code hook** (`agentbrake claude-code ...`, `agentbrake.integrations.claude_code_hook`): a
+  `PreToolUse` hook that runs the flow engine, the loop / retry-storm / budget detectors and the
+  receipt chain across Claude Code's one-process-per-call model. State lives per `session_id` under
+  `~/.agentbrake/claude-code/`, behind a cross-process file lock (`msvcrt` / `fcntl`). Reading
+  untrusted content (`WebFetch`, `WebSearch`, MCP tools) taints the session; afterwards a likely
+  network shell command, a `WebFetch` to an unlisted host or an MCP send asks the user (`deny` in
+  strict mode). Fail-closed on internal errors, corrupt state, invalid policy and failed imports
+  (exit code 2); the hook entry runs Python in isolated mode so a project cannot shadow the
+  package. Self-protection against the agent disabling it, signed `flow_ask` / `flow_block` /
+  `flow_allow` / `flow_override` / detector receipts, and operator commands `status`, `reset`,
+  `disable`, `enable`, `export`, `install`, `uninstall`, `print-settings`. Examples (settings
+  block, policy, plugin) in `examples/claude-code/`; research and design in
+  `docs/research/claude-code-hook.md`.
+- `receipts.mint_flow_ask_receipt`, and an optional `decision` argument on detector receipts
+  (default `"block"`, unchanged output).
+
+### Changed
+- `import agentbrake` no longer imports httpx: `AgentBrakeClient` loads on first use (remote mode
+  only), saving about 50 ms per process. `agentbrake.AgentBrakeClient` still works.
+
 ## [0.3.3] - 2026-10-09
 
 ### Added

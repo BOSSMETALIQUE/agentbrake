@@ -1,0 +1,29 @@
+{
+  "mode": "ask",
+  "webfetch_allowed_domains": [
+    "docs.python.org",
+    "*.readthedocs.io"
+  ],
+  "recipients": {
+    "mcp__claude_ai_Gmail__send_message": {
+      "fields": [
+        "to",
+        "cc",
+        "bcc"
+      ],
+      "values": [
+        "you@example.com"
+      ],
+      "other_fields": [
+        "subject",
+        "body",
+        "attachments",
+        "replyThreadId",
+        "replyToMessageId"
+      ]
+    }
+  },
+  "budget": {
+    "max_calls": 3000
+  }
+}

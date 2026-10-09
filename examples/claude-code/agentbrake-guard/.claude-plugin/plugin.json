@@ -1,0 +1,10 @@
+{
+  "name": "agentbrake-guard",
+  "version": "0.1.0",
+  "description": "AgentBrake PreToolUse hook: session taint (untrusted read -> egress asks), loop/retry/budget detectors, signed receipts. Needs py-agentbrake installed in the `python` found on PATH.",
+  "author": {
+    "name": "BOSSMETALIQUE"
+  },
+  "repository": "https://github.com/BOSSMETALIQUE/agentbrake",
+  "license": "MIT"
+}
