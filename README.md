@@ -211,6 +211,28 @@ Flow control is a strong, cheap layer, not a sandbox. Its guarantees are honest 
 
 [`examples/08_langgraph_flow_middleware.py`](examples/08_langgraph_flow_middleware.py) runs a real LangGraph agent with AgentBrake as tool-call middleware, with no API key and no network access. One design point from building it: in our tests on LangGraph, returning a refusal message to the agent lets the agent keep going and retry, while raising stops the run, so the demo raises. For how the other frameworks expose a pre-execution hook, and what we did and did not verify by execution, see [`docs/research/framework-security-map.md`](docs/research/framework-security-map.md).
 
+## Guarding Claude Code sessions (PreToolUse hook)
+
+`agentbrake claude-code` runs the same engine as a [Claude Code hook](https://code.claude.com/docs/en/hooks), so every tool call Claude makes goes through it first:
+
+- **Session taint.** Reading untrusted content (`WebFetch`, `WebSearch`, any MCP tool) taints the session. After that, Claude Code **asks you** before a call that looks like data leaving the machine: a Bash/PowerShell command that probably uses the network (`curl`, `Invoke-WebRequest`, `nslookup`, `git push`, a URL in the command...), a `WebFetch` to a host that is not on your allow-list (the URL itself can carry data), or an MCP tool that sends. Untainted sessions are not slowed down by prompts. `"mode": "strict"` turns the asks into denials.
+- **Always on:** loop detection (the same call 6 times in a row is denied), retry storms (8 failures of one tool in 20 calls asks), a budget of 2,000 tool calls per session.
+- **Allow-lists:** hosts for `WebFetch`, and recipients for MCP send tools through `allow_args`.
+- **Signed receipts** for every ask, deny and allow-by-policy, in `~/.agentbrake/claude-code/<session>.receipts.jsonl`; `agentbrake claude-code export` writes a bundle for `agentbrake verify`.
+- **Fail-closed:** an internal error, an unreadable state file or an invalid policy blocks the call (exit code 2). Claude cannot switch the hook off through its tools: the control commands, file-tool access to the state directory and `disableAllHooks` are refused, and edits to `.claude/settings*.json` ask first. The hook runs Python in isolated mode, so a repository carrying its own `agentbrake/` folder cannot replace it.
+
+Install it into a dedicated virtual environment, so that switching branches or reinstalling your project never breaks the hook:
+
+```powershell
+py -m venv $env:USERPROFILE\.agentbrake\venv
+& $env:USERPROFILE\.agentbrake\venv\Scripts\python.exe -m pip install py-agentbrake
+& $env:USERPROFILE\.agentbrake\venv\Scripts\python.exe -m agentbrake claude-code install
+```
+
+`install` checks that the hook starts, backs up `~/.claude/settings.json`, and adds the hook entries (exec form, Python in isolated mode, 10 s timeout). If it gets in your way, run `agentbrake claude-code disable` in your own terminal (`--minutes 30` to have it come back on its own); `enable` turns it back on, `reset` clears a session's taint (and is receipted), `uninstall` removes the entries. Examples and a plugin version: [`examples/claude-code/`](examples/claude-code/).
+
+**What it does not do.** It is a check on the command *text*, not a sandbox: a script written to disk and then run, or an obfuscation it does not recognise, gets past the shell check. It does not read content, so a poisoned file read with `Read` does not taint the session unless you add `Read` to the sources. A hook that times out, a missing interpreter, or a settings file edited by something other than Claude lets calls through. For a hook nobody can remove, deploy it in managed settings (`C:\Program Files\ClaudeCode\managed-settings.json` with `allowManagedHooksOnly`); where it is available (macOS, Linux, WSL2, not native Windows), the Claude Code sandbox is the hard network boundary and this hook adds the sequence awareness it lacks. Each tool call costs about a quarter of a second for the extra Python process. Research, design and the full list of limits: [`docs/research/claude-code-hook.md`](docs/research/claude-code-hook.md).
+
 ## How it works
 
 The `@guard()` decorator wraps your tool-dispatch function and keeps a per-run `RunState` (run id, total cost, full call history, active taints, active delegation). Every call passes through the active detectors in order (delegation → escalation → flow → loop → retry-storm → budget), and any hit raises `AgentBrakeInterrupt` *before* the underlying tool runs. Loop detection uses a SHA-256 hash over the JSON-sorted `(name, args)` payload, so argument ordering doesn't fool it.
@@ -527,6 +549,7 @@ Design and research write-ups live in the repo, including their own caveats:
 - [`docs/research/framework-security-map.md`](docs/research/framework-security-map.md): how popular agent frameworks expose a pre-execution hook, and where native flow control is missing. Each claim is marked with how it was checked (run, read from the code path, or not verified).
 - [`docs/research/arxiv-survey.md`](docs/research/arxiv-survey.md): a survey of recent agent-security papers and what was and was not adopted.
 - [`docs/research/argument-level-flow.md`](docs/research/argument-level-flow.md): CaMeL, FIDES, Progent, Invariant and PACT compared on argument-level flow control; why `allow_args` is an exact allow-list and why provenance from the user's prompt was not shipped.
+- [`docs/research/claude-code-hook.md`](docs/research/claude-code-hook.md): Claude Code's hook contract re-checked against the docs, existing security hooks (Lasso, Superagent, Enkrypt and others) compared, known Claude Code exfiltration CVEs, and the design of the session-taint hook with what stays fail-open.
 - [`docs/design/zk-receipts.md`](docs/design/zk-receipts.md): a design spike on zero-knowledge receipts, including why they do not fix the compromised-host case and where they would actually help.
 
 ## Why AgentBrake vs LangSmith / Helicone / AgentOps
