@@ -6,6 +6,19 @@ All notable changes to AgentBrake are documented here. Format follows
 
 ## [Unreleased]
 
+### Fixed
+- **Private-data taint now keys off the file path, not the command verb.** A
+  read like `awk 'END{print NR}' .env`, `grep SECRET .env`, `sed -n 1p .env`,
+  `python -c "open('.env')"`, `Get-Content .env`, `cp .env /tmp` or `source .env`
+  now taints the session `private`, the same as `cat .env` did — any Bash /
+  PowerShell / cmd command whose arguments, redirections or embedded code name a
+  sensitive path (`.env*`, `*.pem`, `*.key`, `id_rsa*`, `~/.ssh/*`,
+  `~/.aws/credentials`, `.netrc`, `.npmrc`, `.pypirc`, `.git-credentials`, ...),
+  handling `~`, `$HOME`/`%USERPROFILE%`, `./`, quotes and globs (`cat .e*`).
+  When a reader's path cannot be resolved (an unexpanded variable, a subshell)
+  it fails closed and taints anyway. Previously only a short list of verbs was
+  recognised, so most readers slipped through with `taints: []`.
+
 ## [0.4.0]
 
 ### Added

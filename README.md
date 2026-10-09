@@ -244,7 +244,7 @@ The hook follows the [lethal trifecta](https://simonwillison.net/2025/Jun/16/the
 | only one of the two (secret *or* untrusted) | anywhere | **allow**, recorded as a receipt |
 | neither | anywhere | **allow**, nothing recorded |
 
-- **Private** = reading `.env`, `*.pem`/`*.key`, `~/.ssh/*`, `~/.aws/credentials`, `.npmrc`, ... or a command that reveals secrets (`env`, `gh auth token`, `cat .env`). **Untrusted** = `WebFetch`, `WebSearch`, any MCP read. **Outbound** = a network shell command, a `WebFetch` to an unlisted host, an MCP send. All configurable in `policy.json`.
+- **Private** = reading `.env`, `*.pem`/`*.key`, `~/.ssh/*`, `~/.aws/credentials`, `.npmrc`, ... through *any* command (`cat`, `awk`, `grep`, `sed`, `head`, `python -c`, `Get-Content`, `cp`, `source`, ...), matched on the **file path** in the command rather than the verb; or a command that reveals secrets without a file (`env`, `gh auth token`, `git config --list`). **Untrusted** = `WebFetch`, `WebSearch`, any MCP read. **Outbound** = a network shell command, a `WebFetch` to an unlisted host, an MCP send. All configurable in `policy.json`.
 - A **secret-looking value in an outbound command's arguments** (an AWS/GitHub key, a private key, a token) also asks — only its SHA-256 fingerprint is ever stored, never the value. This is pattern matching, not a guarantee.
 - `agentbrake claude-code stats` shows, from your local receipts only, how often it asks and how fast you approve — to catch reflexive clicking.
 - `"mode": "taint-strict"` restores the pre-0.4 rule (any untrusted read, then any egress, asks); `"strict"` denies instead.
@@ -257,7 +257,7 @@ The hook follows the [lethal trifecta](https://simonwillison.net/2025/Jun/16/the
 
 ### What it does not do (plainly)
 
-- It reads the command **text**, not a sandbox: a script written to disk and then run, an alias, or an obfuscation it doesn't recognise gets past the shell check.
+- It reads the command **text**, not a sandbox: this is a pattern, not a guarantee. The private-file check matches sensitive paths written in the command (so `awk ... .env`, `python -c "open('.env')"`, `cp .env /tmp` all taint), and fails closed when a reader's path can't be resolved (an unexpanded variable, a subshell). But a script written to disk that reads the file internally (`python exfil.py`), a path built at runtime, an alias, or an obfuscation it doesn't recognise still slips past — and it can over-flag (e.g. `grep ".env" notes.txt` searches for the string, yet taints). Over-flagging is cheap: the private leg alone never prompts; it only matters inside the full trifecta.
 - The **secret-in-arguments** check is pattern matching — it can miss a real secret and flag a non-secret.
 - It is **fail-open** on its own timeout, on a missing interpreter, and if the hook is removed from settings by something other than Claude. For a hook nobody can remove, use managed settings (`C:\Program Files\ClaudeCode\managed-settings.json` with `allowManagedHooksOnly`).
 - Where the Claude Code sandbox runs (macOS, Linux, WSL2 — **not native Windows**) it is the hard network boundary; this hook adds the sequence awareness it lacks.

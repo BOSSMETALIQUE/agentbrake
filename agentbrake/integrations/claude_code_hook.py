@@ -739,16 +739,149 @@ def _norm_posix(path: str) -> str:
     return os.path.expanduser(path).replace("\\", "/").lower()
 
 
+def _phrase_for_glob(glob: str) -> str:
+    g = glob.lower()
+    for pat, phrase in _PRIVATE_PHRASES:
+        if pat.lower() == g:
+            return phrase
+    return "a sensitive file"
+
+
 def _private_file_phrase(path: str, globs: Sequence[str]) -> Optional[str]:
     full = _norm_posix(path)
     base = full.rsplit("/", 1)[-1]
     for glob in globs:
         g = glob.lower()
         if fnmatch.fnmatchcase(base, g) or fnmatch.fnmatchcase(full, g):
-            for pat, phrase in _PRIVATE_PHRASES:
-                if pat.lower() == g:
-                    return phrase
-            return "a sensitive file"
+            return _phrase_for_glob(glob)
+    return None
+
+
+# -- reading a sensitive file through ANY shell command ------------------------
+#
+# The taint must not depend on the command verb: `awk ... .env`, `grep x .env`,
+# `python -c "open('.env')"` and `cp .env /tmp` all expose the file, the same as
+# `cat .env`. So we look for a sensitive *path* anywhere in the command text,
+# whatever runs it. This is a text heuristic over the command string, not a
+# shell parser (see the README): it can miss and it can over-flag. Because the
+# "private" leg alone never prompts (only the full trifecta does), we err toward
+# flagging.
+
+# Commands that print their arguments without opening a file named in them: a
+# sensitive-looking token here is text, not a read. (A real read hidden in a
+# subshell is still caught — the subshell is a separate segment.)
+_PRINTERS = frozenset({
+    "echo", "printf", "print", "write-output", "write-host", "write-error", "@echo",
+})
+# Commands that stream a file's *contents*. For these, a path we cannot resolve
+# (an unexpanded variable, a subshell) is treated as sensitive — fail-closed.
+_CONTENT_READERS = frozenset({
+    "cat", "tac", "nl", "type", "more", "less", "head", "tail", "awk", "gawk", "mawk",
+    "sed", "grep", "egrep", "fgrep", "rg", "ag", "ack", "select-string", "sls",
+    "get-content", "gc", "cut", "strings", "xxd", "od", "hexdump", "base64", "source",
+    ".", "wc", "sort", "uniq", "tr", "paste", "dd", "readlink", "realpath",
+})
+_HOME = os.path.expanduser("~").replace("\\", "/")
+_HOME_VARS = re.compile(r"\$\{?HOME\}?|\$env:(?:USERPROFILE|HOME)|%USERPROFILE%|%HOME(?:PATH)?%", re.I)
+_UNRESOLVED = re.compile(r"\$\w|\$\{|\$\(|`|%[A-Za-z_][A-Za-z0-9_]*%")
+# A path-ish fragment inside a larger token (e.g. inside `open('.env')`).
+_PATHISH = re.compile(r"(?:~|\$\{?\w+\}?|%[A-Za-z_]+%|\.{0,2}[\\/]|\.?\w)[\w.$%{}~@:\\/*?-]*")
+# Command separators only — NOT braces/parens, which appear in awk/jq programs
+# and in PowerShell script blocks and must not cut a command from its file arg.
+_PRIV_SEG = re.compile(r"\|\||&&|\$\(|[|;&\n`]")
+
+
+def _expand_pathish(token: str) -> Tuple[str, bool]:
+    """Expand ~ and the common home variables. Returns (expanded, resolved)."""
+    t = token
+    if t[:1] == "~":
+        t = _HOME + t[1:]
+    t = _HOME_VARS.sub(_HOME, t)
+    return t, (_UNRESOLVED.search(t) is None)
+
+
+def _private_reps(globs: Sequence[str]) -> List[Tuple[str, str]]:
+    """Concrete example names for basename globs, so a glob *token* like `.e*`
+    can be matched (``fnmatch(".env", ".e*")``). Returns (example, glob)."""
+    reps = []
+    for g in globs:
+        if "/" in g:
+            continue
+        reps.append((g.replace("*", "x").replace("?", "x"), g))
+    return reps
+
+
+def _is_private_path(token: str, globs: Sequence[str], reps: List[Tuple[str, str]]) -> Optional[str]:
+    norm = token.replace("\\", "/").strip().strip("'\"").lower()
+    while norm.startswith("./"):
+        norm = norm[2:]
+    if not norm:
+        return None
+    base = norm.rsplit("/", 1)[-1]
+    for g in globs:
+        gl = g.lower()
+        if fnmatch.fnmatchcase(base, gl) or fnmatch.fnmatchcase(norm, gl):
+            return g
+    if "*" in token or "?" in token:  # the token is itself a glob (cat .e*)
+        for example, g in reps:
+            if fnmatch.fnmatchcase(example, base):
+                return g
+    return None
+
+
+def _candidate_fragments(word: str) -> List[Tuple[str, bool]]:
+    """Path candidates in one shell word: the token itself and any path-ish
+    fragment inside it (for inline code / glued redirections)."""
+    s = word.strip()
+    if len(s) >= 2 and s[0] == s[-1] and s[0] in "'\"":
+        s = s[1:-1]
+    out: List[Tuple[str, bool]] = []
+    t = s
+    while t[:1] == "<":
+        t = t[1:]
+    if t[:1] == ">":  # an output-redirect target is a write, not a read
+        t = ""
+    if t:
+        out.append(_expand_pathish(t))
+    for m in _PATHISH.finditer(s):
+        frag = m.group(0)
+        if frag and frag != t:
+            out.append(_expand_pathish(frag))
+    return out
+
+
+def _command_private_reason(command: str, globs: Sequence[str]) -> Optional[str]:
+    """A sensitive file read by any command in ``command``, or None."""
+    reps = _private_reps(globs)
+    undetermined = False
+    for segment in _PRIV_SEG.split(command):
+        words = _WORD_RE.findall(segment)
+        if not words:
+            continue
+        idx = 0
+        while idx < len(words):
+            w = words[idx]
+            bare = _program_name(w)
+            if _ASSIGNMENT_RE.match(w) or bare in _WRAPPERS:
+                idx += 1
+                continue
+            if w.startswith("-") or re.fullmatch(r"\d+[smhd]?", w):
+                idx += 1
+                continue
+            break
+        program = _program_name(words[idx]) if idx < len(words) else ""
+        if program in _PRINTERS:
+            continue
+        is_reader = program in _CONTENT_READERS
+        for w in words:
+            for cand, resolved in _candidate_fragments(w):
+                hit = _is_private_path(cand, globs, reps)
+                if hit:
+                    return _phrase_for_glob(hit)
+                if is_reader and not resolved and _UNRESOLVED.search(w):
+                    undetermined = True
+    if undetermined:
+        return "a file whose path could not be determined"
     return None
 
 
@@ -765,9 +898,15 @@ def _private_reason(policy: "Policy", tool: str, tool_input: Dict[str, Any]) -> 
     if tool in policy.shell_tools:
         command = tool_input.get("command")
         if isinstance(command, str):
+            # A command that reveals secrets without naming a file (env dump,
+            # `gh auth token`, `git config --list`): the configurable patterns.
             for pat in policy.private_command_patterns:
                 if pat.search(command):
                     return "credentials from the shell"
+            # A command that reads a sensitive file, whatever the verb.
+            phrase = _command_private_reason(command, policy.private_file_globs)
+            if phrase:
+                return phrase
     return None
 
 

