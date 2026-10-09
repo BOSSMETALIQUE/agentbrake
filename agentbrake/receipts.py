@@ -393,6 +393,40 @@ def mint_flow_ask_receipt(
     )
 
 
+def mint_flow_observe_receipt(
+    ledger: Ledger,
+    *,
+    run_state: RunState,
+    sink_call: ToolCall,
+    flow: Dict[str, Any],
+    agent_id: Optional[str] = None,
+    policy_digest_value: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Receipt for an egress the policy *allowed* but still wants on record.
+
+    Used by the trifecta rule when only one of the two taints (private data OR
+    untrusted content) is present at an outbound call: not enough to warrant
+    interrupting the user, but the exact pairing an auditor needs to be able to
+    reconstruct afterwards. No prompt is shown; the call runs. ``decision`` is
+    ``"observe"`` so a reader can tell it apart from a block or an approval.
+    """
+    return _seal_and_append(
+        ledger,
+        lambda seq, prev_hash, chain_id: build_flow_attestation(
+            seq=seq,
+            prev_hash=prev_hash,
+            run_id=run_state.run_id,
+            sink_call=sink_call,
+            flow=flow,
+            chain_id=chain_id,
+            agent_id=agent_id,
+            kind="flow_observe",
+            decision="observe",
+            policy_digest_value=policy_digest_value,
+        ),
+    )
+
+
 def build_detector_attestation(
     *,
     seq: int,

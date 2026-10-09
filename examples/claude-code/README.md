@@ -3,7 +3,7 @@
 | File | What it is |
 |---|---|
 | `settings.example.json` | The `hooks` block for a Claude Code `settings.json`. Replace the interpreter path, or let `agentbrake claude-code install` write it with the right path (it also checks that the hook starts). `agentbrake claude-code print-settings` prints it for your interpreter |
-| `policy.example.json` | Overrides for `~/.agentbrake/claude-code/policy.json`. Every key is optional; unknown keys are refused so a typo cannot silently weaken the policy |
+| `policy.example.json` | Overrides for `~/.agentbrake/claude-code/policy.json`. Every key is optional; unknown keys are refused so a typo cannot silently weaken the policy. A list-valued key (`egress_allowed_domains`, `private_file_globs`, ...) **replaces** its default, so copy the entries you want to keep |
 | `agentbrake-guard/` + `.claude-plugin/marketplace.json` | The same hooks as a plugin, in a local marketplace (`claude plugin marketplace add <this folder>`, then `claude plugin install agentbrake-guard@agentbrake`). The plugin runs `python` from `PATH`, which must be the interpreter py-agentbrake is installed in; if it isn't, the hook fails closed and blocks every tool call. Prefer `install` unless you know your `PATH` |
 
 The hook runs Python in isolated mode (`-I`): Claude Code starts it in the
