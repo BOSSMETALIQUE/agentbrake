@@ -9,7 +9,6 @@ from contextvars import ContextVar, Token
 from typing import Any, Callable, Dict, List, Optional
 
 from . import delegation, receipts, signing
-from .client import AgentBrakeClient
 from .delegation import (
     AcceptedDelegation,
     DelegationDetector,
@@ -61,6 +60,24 @@ __all__ = [
 
 _FIXED_COST_PER_CALL_USD = 0.01
 _REMOTE_WAIT_TIMEOUT_S = 300.0
+
+
+def __getattr__(name: str) -> Any:
+    # AgentBrakeClient pulls in httpx (~50 ms), needed only in remote mode.
+    # Loaded on first use so short-lived processes — the Claude Code hook
+    # starts one per tool call — don't pay for it; once loaded it is a plain
+    # module attribute again, so tests can still monkeypatch it.
+    if name == "AgentBrakeClient":
+        from .client import AgentBrakeClient
+
+        globals()[name] = AgentBrakeClient
+        return AgentBrakeClient
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def _client_class() -> Any:
+    """The client class: a monkeypatched one if set, else the real one."""
+    return globals().get("AgentBrakeClient") or __getattr__("AgentBrakeClient")
 
 
 class Run:
@@ -174,7 +191,7 @@ class Run:
                 run_id=self.state.run_id,
             )
 
-        self.client = AgentBrakeClient(api_url) if mode == "remote" else None
+        self.client = _client_class()(api_url) if mode == "remote" else None
         self._token: Optional[Token] = None
 
     def flow_receipts(self) -> List[dict]:

@@ -360,6 +360,39 @@ def mint_flow_allow_receipt(
     )
 
 
+def mint_flow_ask_receipt(
+    ledger: Ledger,
+    *,
+    run_state: RunState,
+    sink_call: ToolCall,
+    flow: Dict[str, Any],
+    agent_id: Optional[str] = None,
+    policy_digest_value: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Receipt for a denied flow handed to a human instead of blocked outright.
+
+    Used where the enforcement point can only ask, not wait for an answer —
+    a Claude Code ``PreToolUse`` hook returns ``ask`` and Claude Code shows
+    the prompt. The row proves the flow was caught and put in front of a
+    person; if they approve, a ``flow_override`` row follows it in the chain.
+    """
+    return _seal_and_append(
+        ledger,
+        lambda seq, prev_hash, chain_id: build_flow_attestation(
+            seq=seq,
+            prev_hash=prev_hash,
+            run_id=run_state.run_id,
+            sink_call=sink_call,
+            flow=flow,
+            chain_id=chain_id,
+            agent_id=agent_id,
+            kind="flow_ask",
+            decision="ask",
+            policy_digest_value=policy_digest_value,
+        ),
+    )
+
+
 def build_detector_attestation(
     *,
     seq: int,
@@ -372,6 +405,7 @@ def build_detector_attestation(
     blocked_at: Optional[str] = None,
     context: Optional[Dict[str, Any]] = None,
     policy_digest_value: Optional[str] = None,
+    decision: str = "block",
 ) -> Dict[str, Any]:
     """Assemble the (unsigned) attestation for detector blocks (loop/budget/escalation).
 
@@ -383,6 +417,8 @@ def build_detector_attestation(
         tool: the tool call that triggered the detector
         context: optional dict with detector-specific context (e.g., run_state summary)
         policy_digest_value: optional digest of enforcement policy
+        decision: ``"block"`` by default; ``"ask"`` / ``"approve"`` / ``"reset"``
+            for enforcement points that hand the call to a human
     """
     attestation: Dict[str, Any] = {
         "version": RECEIPT_VERSION,
@@ -393,7 +429,7 @@ def build_detector_attestation(
         "kind": detector_kind,
         "run_id": run_id,
         "agent_id": agent_id,
-        "decision": "block",
+        "decision": decision,
         "reason": detector_kind,
         "tool": tool,
         "blocked_at": blocked_at or datetime.now(timezone.utc).isoformat(),
@@ -415,6 +451,7 @@ def mint_detector_receipt(
     context: Optional[Dict[str, Any]] = None,
     agent_id: Optional[str] = None,
     policy_digest_value: Optional[str] = None,
+    decision: str = "block",
 ) -> Dict[str, Any]:
     """Build, sign, chain and persist receipt for detector blocks (loop/budget/escalation).
 
@@ -422,6 +459,7 @@ def mint_detector_receipt(
         detector_kind: 'loop', 'budget', 'escalation', or 'timeout'
         context: detector-specific context for the receipt (e.g., total_cost_usd)
         policy_digest_value: optional digest of detector/budget policy
+        decision: see :func:`build_detector_attestation`
     """
     return _seal_and_append(
         ledger,
@@ -435,6 +473,7 @@ def mint_detector_receipt(
             agent_id=agent_id,
             context=context,
             policy_digest_value=policy_digest_value,
+            decision=decision,
         ),
     )
 
