@@ -43,3 +43,11 @@ outreach_candidates.md
 outreach.md
 # ZK design spike artifacts (experiments/, not part of the package)
 experiments/_zk_artifacts/
+
+# Local demo recordings and scratch files (not part of the repo)
+*.mp4
+*.mp3
+*.srt
+transcribe.py
+demo_output/
+demo_video.p
