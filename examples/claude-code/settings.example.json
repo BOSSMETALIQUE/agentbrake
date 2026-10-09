@@ -1,0 +1,60 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "C:\\path\\to\\your\\venv\\Scripts\\python.exe",
+            "args": [
+              "-I",
+              "-c",
+              "import sys\ntry:\n    from agentbrake.cli import main\nexcept BaseException as e:\n    sys.stderr.write('AgentBrake hook could not start (%r): call blocked (fail-closed). '\n                     'Repair the install, or run: agentbrake claude-code uninstall\\n' % (e,))\n    sys.exit(2)\nsys.exit(main(['claude-code', 'hook']))\n",
+              "agentbrake-claude-code-hook"
+            ],
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "C:\\path\\to\\your\\venv\\Scripts\\python.exe",
+            "args": [
+              "-I",
+              "-c",
+              "import sys\ntry:\n    from agentbrake.cli import main\nexcept BaseException as e:\n    sys.stderr.write('AgentBrake hook could not start (%r): call blocked (fail-closed). '\n                     'Repair the install, or run: agentbrake claude-code uninstall\\n' % (e,))\n    sys.exit(2)\nsys.exit(main(['claude-code', 'hook']))\n",
+              "agentbrake-claude-code-hook"
+            ],
+            "timeout": 10,
+            "async": true
+          }
+        ]
+      }
+    ],
+    "PostToolUseFailure": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "C:\\path\\to\\your\\venv\\Scripts\\python.exe",
+            "args": [
+              "-I",
+              "-c",
+              "import sys\ntry:\n    from agentbrake.cli import main\nexcept BaseException as e:\n    sys.stderr.write('AgentBrake hook could not start (%r): call blocked (fail-closed). '\n                     'Repair the install, or run: agentbrake claude-code uninstall\\n' % (e,))\n    sys.exit(2)\nsys.exit(main(['claude-code', 'hook']))\n",
+              "agentbrake-claude-code-hook"
+            ],
+            "timeout": 10,
+            "async": true
+          }
+        ]
+      }
+    ]
+  }
+}

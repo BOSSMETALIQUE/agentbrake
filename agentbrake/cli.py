@@ -319,6 +319,74 @@ def _cmd_report(args: argparse.Namespace) -> int:
     return 0 if verification["ok"] else 1
 
 
+# ----- claude-code ----------------------------------------------------------------
+
+def _cmd_claude_code(args: argparse.Namespace) -> int:
+    # Imported here so the other subcommands don't pay for it, and the hook
+    # path stays as short as possible.
+    from agentbrake.integrations import claude_code_hook as cc
+
+    if args.cc_command == "hook":
+        return cc.main()
+    paths = cc.Paths(cc.default_home())
+    out = sys.stdout
+    try:
+        if args.cc_command == "status":
+            return cc.status(paths, out)
+        if args.cc_command == "reset":
+            return cc.reset(paths, args.session, args.all, out)
+        if args.cc_command == "disable":
+            return cc.disable(paths, args.minutes, out)
+        if args.cc_command == "enable":
+            return cc.enable(paths, out)
+        if args.cc_command == "export":
+            return cc.export_session(paths, args.session, args.out, out)
+        settings_path = Path(args.settings).expanduser()
+        if args.cc_command == "install":
+            return cc.install(settings_path, args.python, out)
+        if args.cc_command == "uninstall":
+            return cc.uninstall(settings_path, out)
+        if args.cc_command == "print-settings":
+            print(json.dumps({"hooks": cc.hook_settings(args.python)}, indent=2))
+            return 0
+    except (OSError, ValueError, cc.HookError) as e:
+        raise _UsageError(str(e)) from e
+    raise _UsageError(f"unknown claude-code command {args.cc_command!r}")
+
+
+def _add_claude_code_parser(sub: argparse._SubParsersAction) -> None:
+    cc = sub.add_parser(
+        "claude-code",
+        help="guard Claude Code sessions with a PreToolUse hook (taint, loops, receipts)",
+    )
+    cc_sub = cc.add_subparsers(dest="cc_command", required=True)
+    cc_sub.add_parser("hook", help="run one hook invocation (called by Claude Code, reads stdin)")
+    cc_sub.add_parser("status", help="show the hook state, policy and recent sessions")
+    reset_cmd = cc_sub.add_parser("reset", help="clear a session's taint, history and counters")
+    reset_cmd.add_argument("--session", help="session id (default: the most recent one)")
+    reset_cmd.add_argument("--all", action="store_true", help="reset every recorded session")
+    disable_cmd = cc_sub.add_parser("disable", help="switch the hook off (kill switch)")
+    disable_cmd.add_argument(
+        "--minutes", type=float, default=None, help="switch back on automatically after N minutes"
+    )
+    cc_sub.add_parser("enable", help="switch the hook back on")
+    export_cmd = cc_sub.add_parser("export", help="export a session's receipts for agentbrake verify")
+    export_cmd.add_argument("--session", help="session id (default: the most recent one)")
+    export_cmd.add_argument("-o", "--out", default="claude_code_receipts.json")
+    default_settings = str(Path.home() / ".claude" / "settings.json")
+    for name, text in (
+        ("install", "add the hook to a Claude Code settings.json (backs it up first)"),
+        ("uninstall", "remove the hook entries this tool installed"),
+        ("print-settings", "print the hooks block to paste into a settings.json"),
+    ):
+        cmd = cc_sub.add_parser(name, help=text)
+        cmd.add_argument("--settings", default=default_settings, help="settings.json to edit")
+        cmd.add_argument(
+            "--python", default=sys.executable, help="interpreter the hook runs with (absolute path)"
+        )
+    cc.set_defaults(func=_cmd_claude_code)
+
+
 # ----- entry point ------------------------------------------------------------
 
 def build_parser() -> argparse.ArgumentParser:
@@ -420,6 +488,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--to", type=_parse_date, default=None, help="period end (ISO date)"
     )
     report.set_defaults(func=_cmd_report)
+
+    _add_claude_code_parser(sub)
 
     return parser
 
