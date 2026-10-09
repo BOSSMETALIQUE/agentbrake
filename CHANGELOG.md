@@ -6,20 +6,49 @@ All notable changes to AgentBrake are documented here. Format follows
 
 ## [Unreleased]
 
+## [0.4.0]
+
 ### Added
-- **Claude Code hook** (`agentbrake claude-code ...`, `agentbrake.integrations.claude_code_hook`): a
-  `PreToolUse` hook that runs the flow engine, the loop / retry-storm / budget detectors and the
-  receipt chain across Claude Code's one-process-per-call model. State lives per `session_id` under
-  `~/.agentbrake/claude-code/`, behind a cross-process file lock (`msvcrt` / `fcntl`). Reading
-  untrusted content (`WebFetch`, `WebSearch`, MCP tools) taints the session; afterwards a likely
-  network shell command, a `WebFetch` to an unlisted host or an MCP send asks the user (`deny` in
-  strict mode). Fail-closed on internal errors, corrupt state, invalid policy and failed imports
-  (exit code 2); the hook entry runs Python in isolated mode so a project cannot shadow the
-  package. Self-protection against the agent disabling it, signed `flow_ask` / `flow_block` /
-  `flow_allow` / `flow_override` / detector receipts, and operator commands `status`, `reset`,
-  `disable`, `enable`, `export`, `install`, `uninstall`, `print-settings`. Examples (settings
-  block, policy, plugin) in `examples/claude-code/`; research and design in
-  `docs/research/claude-code-hook.md`.
+- **Trifecta mode for the Claude Code hook** (now the default). The hook
+  interrupts only when a session has read *both* private data (an `.env`, a key
+  file, `gh auth token`, ...) **and** untrusted content (a web page, a search
+  result, an MCP read) and a call then tries to send data to a destination that
+  is not on a short allow-list. The full trifecta into an unlisted host is
+  **denied with no prompt**; into an allow-listed or undeterminable destination
+  it asks; one leg alone is allowed and recorded as a new `flow_observe`
+  receipt. This replaces the pre-0.4 "any untrusted read then any egress asks"
+  rule, which lives on under `mode: "taint-strict"` (`"strict"` to deny). The
+  aim is to ask rarely and with a reason, so a confirmation still means
+  something (see `docs/research/approval-fatigue-and-trifecta.md`).
+- A **private-data taint**: reading a sensitive file (`private_file_globs`) or
+  running a secret-revealing command (`private_command_patterns`) marks the
+  session, configurable in `policy.json`.
+- A **secret-in-arguments** check: an outbound command carrying something that
+  looks like a secret (AWS/GitHub/Slack/Google key, private key, JWT, Stripe
+  key, or a high-entropy string) asks. Only a SHA-256 fingerprint of the value
+  is ever stored or shown — never the value.
+- Plain-language `ask`/`deny` messages (no "taint"/"sink" jargon) naming the
+  tool, the destination, the private file and the untrusted page with their
+  call numbers.
+- `agentbrake claude-code stats [--days N]`: a local-only summary of how often
+  the hook denies/asks/observes, the approval rate of asks, the median time to
+  approval and the share approved under 5 seconds, and the rules that ask most.
+- `agentbrake claude-code install` now provisions a **dedicated environment**
+  (`~/.agentbrake/venv`) when the current interpreter is not already isolated
+  (pipx / `uv tool`), so the hook keeps working regardless of the user's active
+  venv; `--python`, `--venv-dir` and `--no-dedicated-venv` override it.
+- `receipts.mint_flow_observe_receipt` (kind `flow_observe`, decision
+  `observe`); design note `docs/design/out-of-band-approval.md`.
+- **Claude Code hook foundation** (`agentbrake claude-code ...`,
+  `agentbrake.integrations.claude_code_hook`): a `PreToolUse` hook that runs the flow engine, the
+  loop / retry-storm / budget detectors and the receipt chain across Claude Code's
+  one-process-per-call model. State lives per `session_id` under `~/.agentbrake/claude-code/`,
+  behind a cross-process file lock (`msvcrt` / `fcntl`). Fail-closed on internal errors, corrupt
+  state, invalid policy and failed imports (exit code 2); the hook entry runs Python in isolated
+  mode so a project cannot shadow the package. Self-protection against the agent disabling it,
+  signed receipts, and operator commands `status`, `reset`, `disable`, `enable`, `export`,
+  `install`, `uninstall`, `print-settings`. Examples (settings block, policy, plugin) in
+  `examples/claude-code/`; design notes in `docs/research/claude-code-hook.md`.
 - `receipts.mint_flow_ask_receipt`, and an optional `decision` argument on detector receipts
   (default `"block"`, unchanged output).
 

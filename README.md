@@ -213,25 +213,55 @@ Flow control is a strong, cheap layer, not a sandbox. Its guarantees are honest 
 
 ## Guarding Claude Code sessions (PreToolUse hook)
 
-`agentbrake claude-code` runs the same engine as a [Claude Code hook](https://code.claude.com/docs/en/hooks), so every tool call Claude makes goes through it first:
+### Protect your Claude Code in 30 seconds
 
-- **Session taint.** Reading untrusted content (`WebFetch`, `WebSearch`, any MCP tool) taints the session. After that, Claude Code **asks you** before a call that looks like data leaving the machine: a Bash/PowerShell command that probably uses the network (`curl`, `Invoke-WebRequest`, `nslookup`, `git push`, a URL in the command...), a `WebFetch` to a host that is not on your allow-list (the URL itself can carry data), or an MCP tool that sends. Untainted sessions are not slowed down by prompts. `"mode": "strict"` turns the asks into denials.
-- **Always on:** loop detection (the same call 6 times in a row is denied), retry storms (8 failures of one tool in 20 calls asks), a budget of 2,000 tool calls per session.
-- **Allow-lists:** hosts for `WebFetch`, and recipients for MCP send tools through `allow_args`.
-- **Signed receipts** for every ask, deny and allow-by-policy, in `~/.agentbrake/claude-code/<session>.receipts.jsonl`; `agentbrake claude-code export` writes a bundle for `agentbrake verify`.
-- **Fail-closed:** an internal error, an unreadable state file or an invalid policy blocks the call (exit code 2). Claude cannot switch the hook off through its tools: the control commands, file-tool access to the state directory and `disableAllHooks` are refused, and edits to `.claude/settings*.json` ask first. The hook runs Python in isolated mode, so a repository carrying its own `agentbrake/` folder cannot replace it.
-
-Install it into a dedicated virtual environment, so that switching branches or reinstalling your project never breaks the hook:
-
-```powershell
-py -m venv $env:USERPROFILE\.agentbrake\venv
-& $env:USERPROFILE\.agentbrake\venv\Scripts\python.exe -m pip install py-agentbrake
-& $env:USERPROFILE\.agentbrake\venv\Scripts\python.exe -m agentbrake claude-code install
+```bash
+pipx install py-agentbrake          # or: pip install py-agentbrake
+agentbrake claude-code install
 ```
 
-`install` checks that the hook starts, backs up `~/.claude/settings.json`, and adds the hook entries (exec form, Python in isolated mode, 10 s timeout). If it gets in your way, run `agentbrake claude-code disable` in your own terminal (`--minutes 30` to have it come back on its own); `enable` turns it back on, `reset` clears a session's taint (and is receipted), `uninstall` removes the entries. Examples and a plugin version: [`examples/claude-code/`](examples/claude-code/).
+`install` creates a dedicated environment for the hook if the interpreter you ran it from is not already an isolated one (so switching project venvs never breaks it), checks that the hook starts, backs up `~/.claude/settings.json`, and registers the hook. New Claude Code sessions are protected right away.
 
-**What it does not do.** It is a check on the command *text*, not a sandbox: a script written to disk and then run, or an obfuscation it does not recognise, gets past the shell check. It does not read content, so a poisoned file read with `Read` does not taint the session unless you add `Read` to the sources. A hook that times out, a missing interpreter, or a settings file edited by something other than Claude lets calls through. For a hook nobody can remove, deploy it in managed settings (`C:\Program Files\ClaudeCode\managed-settings.json` with `allowManagedHooksOnly`); where it is available (macOS, Linux, WSL2, not native Windows), the Claude Code sandbox is the hard network boundary and this hook adds the sequence awareness it lacks. Each tool call costs about a quarter of a second for the extra Python process. Research, design and the full list of limits: [`docs/research/claude-code-hook.md`](docs/research/claude-code-hook.md).
+**What you'll see:** almost nothing, most of the time. The hook stays silent while a session is doing ordinary work. It speaks up only when a call looks like the *lethal trifecta* — your private data **and** untrusted content both in the session, now heading to an outside destination:
+
+> AgentBrake blocked this call: This command (`'curl' reaches the network`) to `evil.example` can send data off the machine. The session read a .env file (call #3) and a web page (call #5). If that page carried a hidden instruction, this is how your data would leak.
+
+**If it ever gets in your way**, from your own terminal (Claude can't do this itself):
+
+```bash
+agentbrake claude-code disable          # off now (--minutes 30 to auto-re-enable)
+agentbrake claude-code enable            # back on
+```
+
+### The rule (default mode: `trifecta`)
+
+The hook follows the [lethal trifecta](https://simonwillison.net/2025/Jun/16/the-lethal-trifecta/): a leak needs private data **and** untrusted content **and** a way out, together. It interrupts on the *combination*, not on any single step, so it asks rarely — because a prompt you see every few minutes is a prompt you approve without reading.
+
+| In the session | An outbound call to... | What happens |
+|---|---|---|
+| a secret read **and** untrusted content read | an unlisted host (e.g. `evil.example`) | **deny**, no prompt |
+| a secret read **and** untrusted content read | an allow-listed host, or one it can't determine | **ask** |
+| only one of the two (secret *or* untrusted) | anywhere | **allow**, recorded as a receipt |
+| neither | anywhere | **allow**, nothing recorded |
+
+- **Private** = reading `.env`, `*.pem`/`*.key`, `~/.ssh/*`, `~/.aws/credentials`, `.npmrc`, ... or a command that reveals secrets (`env`, `gh auth token`, `cat .env`). **Untrusted** = `WebFetch`, `WebSearch`, any MCP read. **Outbound** = a network shell command, a `WebFetch` to an unlisted host, an MCP send. All configurable in `policy.json`.
+- A **secret-looking value in an outbound command's arguments** (an AWS/GitHub key, a private key, a token) also asks — only its SHA-256 fingerprint is ever stored, never the value. This is pattern matching, not a guarantee.
+- `agentbrake claude-code stats` shows, from your local receipts only, how often it asks and how fast you approve — to catch reflexive clicking.
+- `"mode": "taint-strict"` restores the pre-0.4 rule (any untrusted read, then any egress, asks); `"strict"` denies instead.
+
+### Always on, and self-protecting
+
+- Loop detection (the same call 6× in a row is denied), retry storms, a 2,000-call budget.
+- **Signed receipts** for every deny/ask/observe/approval, in `~/.agentbrake/claude-code/<session>.receipts.jsonl`; `agentbrake claude-code export` writes a bundle for `agentbrake verify`.
+- **Fail-closed:** an internal error, unreadable state, an invalid policy or a broken import blocks the call (exit 2). Claude can't switch the hook off through its tools (control commands, the state directory and `disableAllHooks` are refused; editing `.claude/settings*.json` asks). The hook runs Python in isolated mode, so a repo shipping its own `agentbrake/` can't replace it.
+
+### What it does not do (plainly)
+
+- It reads the command **text**, not a sandbox: a script written to disk and then run, an alias, or an obfuscation it doesn't recognise gets past the shell check.
+- The **secret-in-arguments** check is pattern matching — it can miss a real secret and flag a non-secret.
+- It is **fail-open** on its own timeout, on a missing interpreter, and if the hook is removed from settings by something other than Claude. For a hook nobody can remove, use managed settings (`C:\Program Files\ClaudeCode\managed-settings.json` with `allowManagedHooksOnly`).
+- Where the Claude Code sandbox runs (macOS, Linux, WSL2 — **not native Windows**) it is the hard network boundary; this hook adds the sequence awareness it lacks.
+- Each call adds ~0.3–0.4 s for the extra Python process. Examples and a plugin: [`examples/claude-code/`](examples/claude-code/). Research and the full limits: [`docs/research/approval-fatigue-and-trifecta.md`](docs/research/approval-fatigue-and-trifecta.md), [`docs/research/claude-code-hook.md`](docs/research/claude-code-hook.md).
 
 ## How it works
 
