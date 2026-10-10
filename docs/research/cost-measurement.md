@@ -95,13 +95,31 @@ Read these before quoting any figure above.
   cost is set almost entirely by this value. A higher threshold costs more
   per stopped loop. A lower one stops sooner but risks interrupting
   legitimate retries. Other values were not measured.
-- **Only identical calls were exercised.** The loop detector that stopped
-  the protected runs fires on consecutive identical calls (same tool, same
-  arguments). In this scenario the agent always retried
-  `get_report` with the same argument. An agent that varies its arguments
-  on each attempt (pagination, a parameter that changes) is not covered by
-  this detector. That case falls to `RetryStormDetector`, which is enabled
-  by default, but its behaviour and cost were not measured here.
+- **Varied arguments are not caught: measured, AgentBrake stopped nothing.**
+  The protected runs above were stopped by the loop detector, which fires
+  only on consecutive identical calls (same tool, same arguments). A
+  separate measurement varied the arguments instead: `get_report` with a
+  `page` number that increases on every attempt, a tool that always fails,
+  Haiku 4.5, 2 runs, 30-turn cap. Both arms ran all 30 turns, with about
+  563,000 input tokens each, and AgentBrake recorded no stop reason. The
+  script for that variant is not published yet. Why neither detector fired:
+  - The loop detector compares a SHA-256 of tool name plus arguments
+    (`agentbrake/detectors.py`, `_structural_hash`). A new `page` value
+    gives a new hash, so the streak never starts.
+  - `RetryStormDetector` does count same-tool calls whatever their arguments
+    (5 calls in a window of the last 10 calls, not a time window), so it
+    reaches its threshold from the fifth attempt onward. It then exempts the
+    burst as "progress" whenever a numeric argument rises or falls strictly
+    over at least 3 calls, the pagination signature. That check looks only
+    at the arguments, not at the outcomes, so the tool failing on every
+    call does not count against it. A strictly rising `page` therefore
+    passes as progress on every turn.
+  - The budget, the only other stop that applies here, was disabled
+    (`UNLIMITED`).
+
+  Until that changes, an agent that retries a failing tool with a strictly
+  rising or falling numeric argument is not stopped by AgentBrake's default
+  configuration.
 - **Behaviour depends on the instruction given to the agent.** Haiku 5.5 vs
   Haiku 4.5 already shows that two models handle the same instruction
   differently. A different prompt, tool description or error message could
