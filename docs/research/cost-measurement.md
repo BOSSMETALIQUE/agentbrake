@@ -95,6 +95,13 @@ Read these before quoting any figure above.
   cost is set almost entirely by this value. A higher threshold costs more
   per stopped loop. A lower one stops sooner but risks interrupting
   legitimate retries. Other values were not measured.
+- **Only identical calls were exercised.** The loop detector that stopped
+  the protected runs fires on consecutive identical calls (same tool, same
+  arguments). In this scenario the agent always retried
+  `get_report` with the same argument. An agent that varies its arguments
+  on each attempt (pagination, a parameter that changes) is not covered by
+  this detector. That case falls to `RetryStormDetector`, which is enabled
+  by default, but its behaviour and cost were not measured here.
 - **Behaviour depends on the instruction given to the agent.** Haiku 5.5 vs
   Haiku 4.5 already shows that two models handle the same instruction
   differently. A different prompt, tool description or error message could
