@@ -224,13 +224,316 @@ Two facts from the hoophq design matter here:
 
 ## 2. Decision 1: form of the command
 
+**v1: stdio, one server per proxy, wrapping its command.**
+
+```text
+agentbrake mcp-proxy --policy FILE [--name NAME] [--receipts PATH] [--check] -- <server command> [args...]
+```
+
+- Everything after `--` is the server command. It is started as a child
+  process from an argument list (no shell), with the proxy's environment:
+  the client passes `env` to the proxy, and the proxy passes it on.
+- `--name` labels the server in receipts and refusal messages. It defaults
+  to the `name` field of the policy file.
+- `--check` validates the policy and the signing key, then exits with 0 or
+  1 without starting the server. It is meant for CI and for checking a
+  setup before editing a client config.
+- Claude Code example:
+
+  ```bash
+  claude mcp add github -- agentbrake mcp-proxy \
+      --policy ~/.agentbrake/policies/github.json \
+      -- npx -y @modelcontextprotocol/server-github
+  ```
+
+  The same `command` / `args` pair goes into `.mcp.json` or Cursor's
+  `mcp.json`.
+
+Why stdio first:
+- Local agents use stdio for local servers.
+- It opens no listening socket, so DNS rebinding, `Origin` and token
+  handling do not arise.
+- It inherits the client's process lifecycle.
+- The spec recommends stdio for local servers "to limit access to just the
+  MCP client" [S10].
+
+**What HTTP would require later** (plan step 7):
+
+- **HTTP at the back** (stdio in front, a remote HTTP server behind) is the
+  easy half.
+  - The proxy holds the upstream credentials from its own environment, so the
+    client's credentials are never forwarded.
+  - It sends the body unchanged and recomputes the mirrored headers from it,
+    so it cannot cause a `-32020` header mismatch.
+  - It handles request-scoped SSE responses, and legacy sessions if it talks
+    to a 2025-11-25 server.
+  - `httpx` is already a dependency.
+- **HTTP in front** (the client talks HTTP to the proxy) is the hard half.
+  - It needs an HTTP server stack, as an optional extra
+    (`agentbrake[mcp-http]`, possibly built on the official SDK).
+  - Bind to 127.0.0.1 and validate `Origin` [S9].
+  - Relay SSE, and either support or explicitly refuse the legacy HTTP
+    shapes.
+  - Above all, it needs an authorization design: the proxy is a resource
+    server with its own tokens and never passes the client's tokens through
+    [S10].
+- In every mode, the proxy starts processes only from its own command line.
+  Never from a network request, which is the escalation path described in
+  [S10].
+
 ## 3. Decision 2: policy format
+
+A JSON file that maps one-to-one onto the existing API. v1 adds no new
+enforcement semantics.
+
+```json
+{
+  "version": 1,
+  "name": "workspace",
+  "default": "deny",
+  "tools": {
+    "fetch_url":  { "class": "untrusted_source" },
+    "read_inbox": { "class": "untrusted_source" },
+    "read_file":  { "class": "private_source" },
+    "list_files": { "class": "neutral" },
+    "send_email": {
+      "class": "egress",
+      "allow_args": {
+        "fields": ["to", "cc", "bcc"],
+        "values": ["me@example.com"],
+        "domains": ["corp.example"],
+        "other_fields": ["subject", "body"]
+      }
+    }
+  },
+  "flows": { "deny": [["untrusted", "egress"]] },
+  "loop_threshold": 4,
+  "retry": { "max_calls_per_tool": 5, "window": 10, "progress_aware": true },
+  "budget_usd": null
+}
+```
+
+**Mapping to the existing API**
+
+| Policy file | AgentBrake |
+|---|---|
+| keys of `tools` | `allowed_tools`, enforced by `EscalationDetector` |
+| `"class": "untrusted_source"` | `FlowPolicy.source(tool, "untrusted")` |
+| `"class": "private_source"` | `FlowPolicy.source(tool, "private")` |
+| `"class": "egress"` | `FlowPolicy.sink(tool, "egress")` |
+| `"class": "neutral"` | allowed, neither source nor sink |
+| `allow_args` | `FlowPolicy.allow_args(tool, ...)`, same fields, same validation |
+| `flows.deny` | `FlowPolicy.deny_flow(label, category)`. If absent: `[["untrusted", "egress"]]`, the same rule as `block_exfiltration` |
+| `loop_threshold`, `retry` | `Run(loop_threshold=..., retry_max_calls_per_tool=..., retry_window=..., retry_progress_aware=...)` |
+| `budget_usd` | `Run(budget_usd=...)`; `null` → `agentbrake.UNLIMITED` |
+
+**How tools are classified.** The three classes follow the "lethal
+trifecta": access to private data, exposure to untrusted content, and the
+ability to communicate externally [S19].
+
+- `untrusted_source`: anything that brings outside content into the context.
+  Web, email, tickets, chat, issue comments, any file an outsider can write.
+- `private_source`: anything that reads the user's own confidential data,
+  such as local files, databases or secrets.
+- `egress`: anything that can send data out, such as email, HTTP POST,
+  messages, comments, pushes or uploads. That includes "write" tools whose
+  output is visible to others.
+- `neutral`: none of the above, for example computation, or listings that
+  carry no outside content.
+
+Rules:
+
+- **`"default": "deny"` is the only value accepted in v1.** A tool missing
+  from `tools` is hidden from `tools/list` and refused if called (§5, §6).
+  This is the allow-list semantics AgentBrake already has, and it also covers
+  tools that appear later through `list_changed`.
+- The proxy never classifies a tool from server annotations, which are
+  untrusted [S5]. A later helper (`suggest-policy`, plan step 6) may *draft*
+  a file from `tools/list` and the annotations, for a human to review.
+- On load, the proxy runs `FlowPolicy.validate()`, which rejects deny rules
+  that can never fire and `allow_args` on a tool that is not a sink. A policy
+  that loads therefore enforces what it says.
+- Unknown keys anywhere in the file are an error, not ignored. A typo such
+  as `"alow_args"` must not silently drop a rule.
+
+**Budget.** The proxy sees tool calls, not model tokens. Each `ToolCall`
+costs the flat estimate `ESTIMATED_COST_PER_TOOL_CALL_USD` (0.01 USD), so
+`budget_usd` in a proxy is a call counter expressed in dollars. It is kept
+for parity with the library, off by default (`null` → `UNLIMITED`), and
+documented as an estimate. A per-tool `cost_usd` is a possible extension,
+not v1.
+
+**Limits inherited from `FlowPolicy`** (see open questions):
+
+- A source tool introduces **one** label. A tool that is both untrusted and
+  private, such as an inbox reader, must pick one. The recommended choice is
+  `untrusted_source`, because `untrusted → egress` is the rule that stops
+  injection-driven exfiltration.
+- Deny rules are **pairs**. The exact trifecta, "block egress only when
+  untrusted *and* private are both active", cannot be expressed. Adding
+  `["private", "egress"]` blocks egress after any private read, which is
+  stricter and will cause false positives. It is therefore opt-in, not the
+  default.
 
 ## 4. Decision 3: state, and flows across servers
 
+**Within one proxy.** The proxy is a long-lived process, so its `Run` and
+`RunState` stay in memory for the life of the process. Taint, call history
+(loop and retry-storm detection) and the budget accumulate there. Nothing is
+written or reloaded per call.
+
+(The request refers to "the hook" and its per-call files. This repository
+contains no such hook today. The contrast holds for any integration that
+starts a fresh process per call, such as a client-side pre-tool-use hook:
+that process must reload its state from disk every time, and a proxy does
+not.)
+
+**What a run is for a proxy.** In the library, a `run()` is one agent task,
+and taint is monotonic within it: `flow.py` says "use a fresh `run()` per
+task". A proxy cannot see task boundaries, and the modern spec states that a
+connection is not a conversation [S1]. **v1 therefore uses one run per proxy
+process.** This errs towards over-blocking, never under-blocking: once
+anything untrusted has been read, every `egress` call is blocked until the
+proxy restarts (in Claude Code, a reconnect of that server). There is
+deliberately no reset tool: a tool the model can call to clear taint is a
+tool an injected prompt can call too. An out-of-band reset is an open
+question.
+
+Protocol sessions are deliberately not used as the scope of a run. hoophq's
+proxy had to refuse 2026-07-28 because its enforcement was keyed to sessions
+[S14], and AgentBrake's must work on both eras.
+
+**Across servers** (read on server A, send through server B). Two proxies
+in two processes do not see each other's taint. Options:
+
+| Option | Verdict |
+|---|---|
+| A. Independent proxies, no shared state | **v1 behaviour, documented as a limitation (§9).** Flows are enforced within one server only. |
+| B. Proxies share state through a file or SQLite | **Rejected.** Check-then-act across processes needs a lock around every decision, and a crashed proxy can leave the lock held. `JsonlLedger` already states that cross-process appends are not coordinated. This brings back the per-call file I/O a proxy avoids, plus a race inside a security decision. |
+| C. A local daemon that every proxy queries | Workable but heavy: a second long-lived process, IPC, its own lifecycle, and authentication of local callers. Not before there is demand. |
+| D. **Aggregator mode**: one proxy launches several servers and exposes their tools under prefixed names | **Chosen for cross-server flows (plan step 5).** One process, one `RunState`, so `untrusted` from `web__fetch_url` blocks `mail__send_email` with the code that exists today. This is the shape the spec and existing gateways use for multiple servers [S5][S14][S15]. |
+
+Aggregator mode costs more than it looks:
+
+- the proxy must answer `initialize` and `server/discover` itself, merging
+  capabilities;
+- it must remap JSON-RPC ids per backend in both directions, including legacy
+  server-to-client requests;
+- it must multiplex `subscriptions/listen` and `list_changed`;
+- tool names change (`<server>__<tool>`), which breaks client-side
+  permission rules that name tools.
+
+Hence one server per proxy first.
+
 ## 5. Decision 4: what the client receives when a call is blocked
 
+**A `tools/call` blocked by a detector gets a tool execution error: a normal
+result with `isError: true`, not a JSON-RPC error.**
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 7,
+  "result": {
+    "resultType": "complete",
+    "isError": true,
+    "content": [{
+      "type": "text",
+      "text": "AgentBrake blocked this call to send_email: flow untrusted -> egress (untrusted content was read earlier by fetch_url). This is a policy decision, not a transient error: do not retry; ask the user."
+    }],
+    "_meta": {
+      "io.github.bossmetalique.agentbrake/decision": {
+        "reason": "flow",
+        "tool": "send_email",
+        "receipt_id": "<id of the signed receipt>"
+      }
+    }
+  }
+}
+```
+
+`resultType` is included only when the request was modern (§1.1). The
+`_meta` key follows the reverse-DNS vendor-prefix rule [S1].
+
+Why `isError` rather than a JSON-RPC error:
+
+- Clients **SHOULD** pass tool execution errors to the model, and only
+  **MAY** pass protocol errors [S5]. A model that never sees why it was
+  stopped tends to retry or improvise. "Policy decision, do not retry, ask
+  the user" tells it what to do.
+- A JSON-RPC error would need a code. `-32602` means invalid params or an
+  unknown tool, which is false for a valid but forbidden call. The range
+  `-32020..-32099` is off-limits [S1]. A private code outside the JSON-RPC
+  range would be legal, but no client gives it any meaning.
+
+Reasons map to messages as follows: `flow` (with the taint source),
+`escalation` (see below), `loop` (identical call repeated, or retry storm),
+`budget`, and `internal` (§8).
+
+**The proxy prevents the call; it does not stop the agent.** In-process,
+`AgentBrakeInterrupt` stops the run. The README's LangGraph finding is that a
+returned refusal lets the agent continue, while raising an exception stops
+it. Through MCP the proxy can only answer, and the client decides what comes
+next. The blocked call never reaches the server.
+
+**Exception: a tool hidden by the policy** (§6) is answered with the
+protocol error **`-32602` "Unknown tool: <name>"**. That is what a server
+answers for a tool it does not have [S5], and the client was never told the
+tool exists. An `escalation` receipt is still minted.
+
+**What the refusal text never contains: argument values.** A flow block on
+`send_email(to=attacker@evil.com)` names the tool, the reason and the taint
+source, not the address. This keeps the refusal from echoing attacker-chosen
+content back into the model's context. The operator gets full detail on
+stderr.
+
+**What the receipt contains.** The existing receipt kinds, unchanged:
+
+| Event | Receipt kind |
+|---|---|
+| flow block | `flow` |
+| denied flow let through by `allow_args` | `flow_allow` |
+| loop, retry-storm block | `loop` |
+| budget block | `budget` |
+| call to a tool outside the allow-list | `escalation` |
+
+`policy_digest` keeps its current definition (the `FlowPolicy`). The proxy
+adds the following to the receipt context:
+
+- the server label (`--name`);
+- the JSON-RPC request id;
+- `tool_args_digest`, a digest of the arguments as flow receipts already
+  carry. Never raw values.
+- the client's `clientInfo` as reported. It is self-reported and
+  unverified [S1], and is marked as such.
+
+Allowed calls with no flow involved produce no receipt, as in the library.
+The existing ambiguity (a retry-storm block is recorded with kind `loop`) is
+inherited, not fixed here.
+
 ## 6. Decision 5: filtering tools/list
+
+- The proxy forwards `tools/list` and removes every tool not listed in the
+  policy's `tools`. It returns the rest **in the server's order**, since
+  deterministic ordering is a **SHOULD** [S5].
+- **Pagination**: each page is filtered on its own, and `nextCursor` is
+  passed through unchanged even if a page ends up empty. The cursor belongs
+  to the server.
+- **Caching (modern)**: when at least one tool was removed, `cacheScope` is
+  set to `"private"` and `ttlMs` is kept [S8]. The filtered list is specific
+  to this policy, and the server's `"public"` would invite a shared cache to
+  serve one policy's view to another client.
+- **Tools that are allowed but blocked in context**, such as a sink while
+  taint is active, **stay listed**. Hiding them mid-run would make the list
+  depend on earlier requests, which servers **MUST NOT** do [S5], and the
+  refusal message (§5) explains a block better than a tool that disappears.
+- **`list_changed`** is relayed as it is. The client's next `tools/list` is
+  filtered again, and a newly added tool stays hidden unless the policy names
+  it. This covers new tools appearing mid-run. It does not cover an existing
+  tool whose **description** changes (a "rug pull"). Pinning a hash of each
+  tool definition is a possible extension, not v1.
+- **Hiding is not the enforcement.** A call to a hidden tool is refused at
+  `tools/call` (§5) whatever the client has cached.
 
 ## 7. Decision 6: signed receipts and the signing key
 
