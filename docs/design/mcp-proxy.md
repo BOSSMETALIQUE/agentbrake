@@ -727,4 +727,83 @@ Each step ships on its own with its tests, and none breaks the existing API.
 
 ## Open questions
 
+- **One run per proxy process.** Without visible task boundaries it is the
+  only safe default, but taint will block legitimate egress for the rest of a
+  long session. Is an out-of-band reset (a signal, or a local CLI command
+  talking to the proxy) worth its attack surface? It must be out of the
+  model's reach.
+- **Restarting a crashed server inside the proxy.** It would keep state, and
+  so taint, across a child restart. Today a crash followed by a manual
+  reconnect gives a fresh proxy. A prompt injection that can crash the server
+  therefore resets taint, as long as the user reconnects. Restarting the
+  child is simple in the modern era, which is stateless, but in the legacy
+  era it requires replaying the cached `initialize`. v1 exits, for
+  simplicity.
+- **MRTR retries.** A `tools/call` retried with `inputResponses` /
+  `requestState` is checked again, since its arguments may differ. v1 also
+  counts it as a new call for loop detection. That is conservative, but a
+  long elicitation could trip the loop detector. The client sets
+  `requestState`, not the model, so exempting retries from counting is
+  plausible. Not decided without data.
+- **The trifecta as pairs.** `private → egress` on its own is stricter than
+  the trifecta and is left opt-in. An AND rule ("untrusted and private both
+  active") would need a `FlowPolicy` extension.
+- **One label per source tool.** Tools that are both untrusted and private
+  are common (mail, chat, tickets). Accepting several labels per tool is also
+  a `FlowPolicy` change.
+- **Refusal as `isError`.** It is the option that informs the model. Some
+  clients may still present it as an ordinary failure, and the model may
+  retry; the loop detector would then catch repeated identical retries. To
+  be measured on Claude Code and Cursor during step 3.
+- **Refusing to start without a key.** The first run fails until `keygen` is
+  run. The alternative is to generate the key on first start and print where
+  it is. It is friendlier but contradicts the 0.3.4 position on keys created
+  unasked.
+- **The `_meta` vendor prefix** `io.github.bossmetalique.agentbrake/`
+  follows the reverse-DNS rule [S1] but is tied to a GitHub account. A
+  project domain would last longer.
+- **Tool names in aggregator mode.** Prefixing changes the names that clients
+  and permission rules refer to.
+
 ## Sources
+
+Specification (Model Context Protocol, revision 2026-07-28 unless noted):
+
+- [S1] Base protocol overview (messages, error codes, `_meta`, statelessness): https://modelcontextprotocol.io/specification/2026-07-28/basic/index
+- [S2] Versioning and compatibility (modern / legacy / dual-era, compatibility matrix), served at: https://modelcontextprotocol.io/specification/latest/basic/lifecycle
+- [S3] Lifecycle, revision 2025-11-25 (`initialize`, version and capability negotiation): https://modelcontextprotocol.io/specification/2025-11-25/basic/lifecycle
+- [S4] stdio transport: https://modelcontextprotocol.io/specification/2026-07-28/basic/transports/stdio
+- [S5] Tools (list, call, annotations, name collisions, error handling): https://modelcontextprotocol.io/specification/latest/server/tools
+- [S6] Multi round-trip requests (MRTR): https://modelcontextprotocol.io/specification/2026-07-28/basic/patterns/mrtr
+- [S7] Subscriptions: https://modelcontextprotocol.io/specification/2026-07-28/basic/patterns/subscriptions
+- [S8] Caching (`ttlMs`, `cacheScope`): https://modelcontextprotocol.io/specification/2026-07-28/server/utilities/caching
+- [S9] Streamable HTTP: https://modelcontextprotocol.io/specification/2026-07-28/basic/transports/streamable-http
+- [S10] Security best practices (token passthrough, local server compromise, stdio in proxy scenarios): https://modelcontextprotocol.io/specification/2026-07-28/basic/security_best_practices
+- [S20] server/discover: https://modelcontextprotocol.io/specification/2026-07-28/server/discover
+
+Official Python SDK:
+
+- [S11] `mcp` on PyPI (2.3.0, Requires-Python ≥ 3.10): https://pypi.org/project/mcp/
+- [S12] python-sdk v2.0.0 release notes (2026-07-28 support): https://newreleases.io/project/github/modelcontextprotocol/python-sdk/release/v2.0.0
+- [S13] python-sdk `pyproject.toml` (dependencies): https://github.com/modelcontextprotocol/python-sdk/blob/main/pyproject.toml
+
+Existing proxies, gateways and clients:
+
+- [S14] hoophq/mcpproxy: https://github.com/hoophq/mcpproxy
+- [S15] agentgateway, MCP proxy guide: https://mintlify.wiki/agentgateway/agentgateway/guides/mcp-proxy
+- [S16] sparfenyuk/mcp-proxy: https://github.com/sparfenyuk/mcp-proxy
+- [S17] Docker MCP Gateway: https://docs.docker.com/ai/mcp-catalog-and-toolkit/mcp-gateway/
+- [S18] Claude Code, MCP configuration: https://code.claude.com/docs/en/mcp
+
+Background:
+
+- [S19] Simon Willison, "The lethal trifecta for AI agents": https://simonwillison.net/2025/Jun/16/the-lethal-trifecta/
+
+Internal references:
+- `agentbrake/flow.py`: `FlowPolicy`, `allow_args`, `block_exfiltration`,
+  `validate`.
+- `agentbrake/detectors.py`: loop and retry-storm detection, 0.3.5 outcome
+  rule.
+- `agentbrake/__init__.py`: `Run`, `guard()`, `_warn_if_ephemeral_signer`.
+- `agentbrake/signing.py`: key resolution, `EphemeralSigningKeyWarning`.
+- `agentbrake/receipts.py`: `JsonlLedger`, receipt kinds.
