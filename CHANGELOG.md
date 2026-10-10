@@ -6,7 +6,7 @@ All notable changes to AgentBrake are documented here. Format follows
 
 ## [Unreleased]
 
-## [0.3.5] - Unreleased
+## [0.3.5] - 2026-10-11
 
 Fixes a retry storm that the default configuration let run unchecked. No receipt format change,
 `verify_chain` unchanged, no API change.
