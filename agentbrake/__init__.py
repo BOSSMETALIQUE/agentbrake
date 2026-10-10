@@ -5,6 +5,7 @@ from __future__ import annotations
 import functools
 import os
 import sys
+import warnings
 from contextvars import ContextVar, Token
 from typing import Any, Callable, Dict, List, Optional
 
@@ -142,6 +143,8 @@ class Run:
             if receipts_path
             else receipts.InMemoryLedger()
         )
+        if receipts_path:
+            _warn_if_ephemeral_signer(receipts_path)
         self.state = RunState()
 
         # Delegation is opt-in and deliberately NOT inherited from init():
@@ -223,6 +226,32 @@ class Run:
             self.client.close()
         if self.state.status == "running":
             self.state.status = "completed" if exc_type is None else "failed"
+
+
+def _warn_if_ephemeral_signer(receipts_path: str) -> None:
+    """Say so, loudly, before durable receipts are signed with a throwaway key.
+
+    A warning rather than a key silently persisted on the user's behalf: a
+    private key appearing on disk unasked is its own risk (backups, shared
+    hosts, CI images), and swapping the process signer mid-run would orphan
+    anything it already signed, delegation grants included. The fix is one
+    command, and the warning names it.
+    """
+    from .server import attest
+
+    if not attest.signer_is_ephemeral():
+        return
+    warnings.warn(
+        f"AgentBrake: receipts are written to {receipts_path} but signed with an "
+        f"EPHEMERAL key (key_id {attest.SIGNER.key_id}) generated for this process. "
+        "Once it exits they cannot be verified ('agentbrake verify' will report "
+        "'no public key known'). Create a persistent key once with "
+        "'agentbrake keygen -o ~/.agentbrake/signing_key.pem' and set "
+        f"{signing.SIGNING_KEY_FILE_ENV} to that path (or set "
+        f"{signing.SIGNING_SEED_ENV}) before starting the agent.",
+        signing.EphemeralSigningKeyWarning,
+        stacklevel=3,
+    )
 
 
 _current_run: ContextVar[Optional[Run]] = ContextVar(

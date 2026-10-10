@@ -93,6 +93,19 @@ SIGNING_KEY, SIGNING_KEY_FROM_ENV = _resolve_key()
 # for the resolution order). Module global, looked up at call time so tests can
 # pin a deterministic key.
 SIGNER, SIGNER_SOURCE = signing.resolve_signer_from_env()
+# The signer exactly as resolved at import, so signer_is_ephemeral() can tell
+# the generated key apart from one installed later (tests, embedding apps).
+_RESOLVED_SIGNER = SIGNER
+
+
+def signer_is_ephemeral() -> bool:
+    """True when new receipts are signed by a key generated for this process.
+
+    Such receipts verify inside the process (it still holds the key) but not
+    after it exits: the private key was never persisted and its public half
+    was never published.
+    """
+    return SIGNER_SOURCE == "generated" and SIGNER is _RESOLVED_SIGNER
 
 
 # ----- canonical encoding & primitives -----------------------------------

@@ -77,6 +77,15 @@ SIGNING_SEED_ENV = "AGENTBRAKE_SIGNING_SEED"
 _KEY_ID_HEX_CHARS = 16
 
 
+class EphemeralSigningKeyWarning(UserWarning):
+    """Durable receipts are being signed with a key that dies with the process.
+
+    Raised (as a warning) when a run writes receipts to a file while no signing
+    key is configured: the process generated its own key, nothing persists it,
+    and every receipt in that file becomes unverifiable once the process exits.
+    """
+
+
 def _key_id_from(material: bytes, *, domain: bytes) -> str:
     """Short hex identifier for key material, domain-separated per algorithm."""
     return hashlib.sha256(domain + material).hexdigest()[:_KEY_ID_HEX_CHARS]

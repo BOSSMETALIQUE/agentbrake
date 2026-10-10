@@ -72,7 +72,10 @@ def _cmd_export(args: argparse.Namespace) -> int:
         print(
             "warning: no signing key configured "
             f"(set {signing.SIGNING_SEED_ENV} or {signing.SIGNING_KEY_FILE_ENV}); "
-            "the chain head will be exported UNSIGNED.",
+            "the chain head will be exported UNSIGNED. If the receipts were also "
+            "minted without one, they were signed by an ephemeral key and cannot "
+            "be verified; run 'agentbrake keygen' and set that variable for "
+            "future runs.",
             file=sys.stderr,
         )
 
@@ -162,6 +165,14 @@ def _failure_lines(report: dict) -> list:
     failed = [chk for chk in report["checks"] if not chk["ok"]]
     lines = [f"What FAILED ({len(failed)} check(s)):"]
     lines += [f"  x {chk['name']}: {chk['detail']}" for chk in failed]
+    if any("no public key known" in chk["detail"] for chk in failed):
+        lines += [
+            "Hint: no trusted public key matches the signing key_id. Receipts minted",
+            f"  with neither {signing.SIGNING_KEY_FILE_ENV} nor {signing.SIGNING_SEED_ENV}",
+            "  set were signed by an ephemeral key that died with its process; they",
+            "  cannot be verified after the fact. Configure a persistent key",
+            "  ('agentbrake keygen') for future runs, or pin the right --public-key.",
+        ]
     lines += [
         "Because verification failed, NOTHING is proven about these receipts:",
         "  not their authenticity, not their integrity, not their completeness.",

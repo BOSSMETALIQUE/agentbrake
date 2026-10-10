@@ -448,6 +448,15 @@ with agentbrake.run(flow_policy=policy, receipts_path="receipts.jsonl") as r:
     ...
 ```
 
+A file of receipts is only worth keeping if they can be verified later, which requires a persistent key. Without `AGENTBRAKE_SIGNING_KEY_FILE` or `AGENTBRAKE_SIGNING_SEED`, the process signs with a key it generated for itself and never saves: the receipts verify inside that process and nowhere else. A run given a `receipts_path` in that state emits an `EphemeralSigningKeyWarning` naming the fix. Set the key up once:
+
+```bash
+agentbrake keygen -o ~/.agentbrake/signing_key.pem
+export AGENTBRAKE_SIGNING_KEY_FILE=~/.agentbrake/signing_key.pem
+```
+
+AgentBrake does not create this file for you: an unencrypted private key appearing on disk unasked (and swept into backups or images) is a risk you should choose. `agentbrake verify` takes an export bundle, not the raw ledger: run `agentbrake export --receipts receipts.jsonl -o bundle.json` first.
+
 **Honest limitation:** an in-process ledger is only as tamper-evident as where it lives. The signature stops silent edits and the hash chain stops silent deletions, but an attacker who can run code in the agent's process could drop the ledger before it is persisted, or read the signing key out of the process and forge receipts outright. For durable proof, use `receipts_path` on append-only storage, set a stable signing key, ship the lines off-box, and anchor exported chain heads with a party the process can't touch.
 
 ### Endpoints
