@@ -48,8 +48,10 @@ with agentbrake.run(budget_usd=5.0) as r:
 with agentbrake.run(budget_usd=5.0) as r:
     agent.invoke("task 2")   # fresh state: task 1's spend doesn't count here
 
-print(r.state.total_cost_usd, len(r.state.calls))
+print(r.state.total_cost_usd, len(r.state.calls))  # an ESTIMATE, see below
 ```
+
+`total_cost_usd` is an **estimate**, not money spent: each guarded tool call is charged a flat placeholder of $0.01 (`agentbrake.ESTIMATED_COST_PER_TOOL_CALL_USD`) so that `budget_usd` works with no pricing configured, which makes it a call-count proxy. `r.state.cost_is_estimate` is `True` whenever that placeholder is part of the total, and interrupts carry it as `cost_is_estimate`; the validation page then says "Estimated cost". Only spend fed in from real token usage (see [Real LLM cost tracking](#real-llm-cost-tracking-cometapi)) is priced.
 
 Arguments omitted from `run()` are inherited from `init()`, so configure the allowlist once and open a cheap fresh run per task. Calling `init()` again also resets the default state.
 
@@ -81,7 +83,7 @@ Since v0.3.1, blocks by every detector above mint a signed receipt (see [Receipt
 
 ## Real LLM cost tracking (CometAPI)
 
-Out of the box, guarded tool calls are priced at a flat $0.01 and `cost_from_tokens(model, input_tokens, output_tokens)` is exported for pricing calls by hand. The [CometAPI](https://www.cometapi.com) provider makes the real thing automatic: CometAPI is an OpenAI-compatible gateway to 500+ models behind one endpoint, its responses carry token usage, and the provider feeds the resulting spend straight into the active run's `BudgetDetector`.
+Out of the box, guarded tool calls are charged a flat $0.01 *estimate* (not a price) and `cost_from_tokens(model, input_tokens, output_tokens)` is exported for pricing calls by hand. The [CometAPI](https://www.cometapi.com) provider makes the real thing automatic: CometAPI is an OpenAI-compatible gateway to 500+ models behind one endpoint, its responses carry token usage, and the provider feeds the resulting spend straight into the active run's `BudgetDetector`.
 
 ```bash
 pip install py-agentbrake[cometapi]     # pulls the openai client

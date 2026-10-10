@@ -142,7 +142,7 @@
           <div class="k">Run ID</div><div>{{ record.run_id }}</div>
           <div class="k">Tool</div><div>{{ tool_label }}</div>
           <div class="k">Created</div><div>{{ record.created_at }}</div>
-          <div class="k">Total cost</div><div>{{ cost_label }}</div>
+          <div class="k">{{ cost_heading }}</div><div>{{ cost_label }}{% if cost_note %} ({{ cost_note }}){% endif %}</div>
         </div>
       </div>
 

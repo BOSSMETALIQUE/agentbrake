@@ -37,6 +37,9 @@ class ToolCall(BaseModel):
     args: Dict[str, Any] = Field(default_factory=dict)
     timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     cost_usd_micro: int = 0  # cost in micro-dollars (1,000,000 µ$ = 1 USD)
+    # True when cost_usd is AgentBrake's flat per-call placeholder (guard()),
+    # not a price derived from the call itself (e.g. token usage).
+    cost_estimated: bool = False
     outcome: str = "pending"  # pending -> ok | error
     error: Optional[str] = None  # repr of the exception when outcome == "error"
 
@@ -81,6 +84,17 @@ class RunState(BaseModel):
     def total_cost_usd(self, value: float) -> None:
         """Convenience setter: USD float to micro-dollars."""
         self.total_cost_usd_micro = int(round(value * 1_000_000))
+
+    @property
+    def cost_is_estimate(self) -> bool:
+        """True when any part of total_cost_usd is the flat per-call placeholder.
+
+        Guarded tool calls are charged a fixed $0.01 each so that budget_usd
+        works out of the box; that is a call-count proxy, not money spent.
+        Only spend fed in from real usage (e.g. the CometAPI provider) is
+        priced. Display total_cost_usd as an *estimate* whenever this is True.
+        """
+        return any(c.cost_estimated for c in self.calls)
 
     def append(self, call: ToolCall) -> None:
         self.calls.append(call)

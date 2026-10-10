@@ -124,6 +124,16 @@ def view_interrupt(interrupt_id: str, request: Request) -> HTMLResponse:
             "calls": calls,
             "tool_label": _tool_label(ctx),
             "cost_label": _format_cost(ctx.get("total_cost_usd", 0.0)),
+            # SDK >= 0.3.4 says when the figure is the flat per-call
+            # placeholder; never present a call-count proxy as money spent.
+            "cost_heading": (
+                "Estimated cost" if ctx.get("cost_is_estimate") else "Total cost"
+            ),
+            "cost_note": (
+                "flat $0.01 per tool call, not a measured price"
+                if ctx.get("cost_is_estimate")
+                else None
+            ),
             # The action awaiting a decision, shown in full. The digest is
             # echoed back on approve so the server can prove the approver saw
             # these exact arguments.

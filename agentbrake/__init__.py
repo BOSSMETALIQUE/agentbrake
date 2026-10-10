@@ -49,6 +49,7 @@ __all__ = [
     "EscalationDetector",
     "LoopDetector",
     "DEFAULT_LOOP_THRESHOLD",
+    "ESTIMATED_COST_PER_TOOL_CALL_USD",
     "RetryStormDetector",
     "cost_from_tokens",
     "FlowPolicy",
@@ -61,7 +62,11 @@ __all__ = [
     "__version__",
 ]
 
-_FIXED_COST_PER_CALL_USD = 0.01
+# Placeholder charge per guarded tool call, so budget_usd works with no pricing
+# configured. It is an estimate (a call-count proxy), never a measured cost:
+# calls carry cost_estimated=True and RunState.cost_is_estimate reports it.
+ESTIMATED_COST_PER_TOOL_CALL_USD = 0.01
+_FIXED_COST_PER_CALL_USD = ESTIMATED_COST_PER_TOOL_CALL_USD  # pre-0.3.4 name
 _REMOTE_WAIT_TIMEOUT_S = 300.0
 
 
@@ -374,6 +379,9 @@ def _build_context(active: Run, call: ToolCall) -> dict:
             "args_digest": receipts.sink_call_digest(call),
         },
         "total_cost_usd": active.state.total_cost_usd,
+        # Lets every consumer (validation UI, logs) label the figure honestly.
+        # The pending call counts: the budget check projects total + its cost.
+        "cost_is_estimate": active.state.cost_is_estimate or call.cost_estimated,
         "run_state": active.state.model_dump(mode="json"),
     }
 
@@ -461,7 +469,12 @@ def guard() -> Callable[[Callable[..., Any]], Callable[..., Any]]:
         def wrapper(name: str, args: Optional[dict] = None, *extra: Any, **kwargs: Any) -> Any:
             active = _require_run()
 
-            call = ToolCall(name=name, args=args or {}, cost_usd=_FIXED_COST_PER_CALL_USD)
+            call = ToolCall(
+                name=name,
+                args=args or {},
+                cost_usd=ESTIMATED_COST_PER_TOOL_CALL_USD,
+                cost_estimated=True,
+            )
 
             # Delegation runs first — identity and mandate precede everything
             # else. Flow runs right after escalation: a forbidden *sequence*
@@ -543,6 +556,7 @@ def guard() -> Callable[[Callable[..., Any]], Callable[..., Any]]:
                     # reject the list[str] added for a loop block below.
                     detector_context: Dict[str, Any] = {
                         "total_cost_usd": active.state.total_cost_usd,
+                        "total_cost_is_estimate": context["cost_is_estimate"],
                         "call_count": len(active.state.calls),
                     }
                     if reason is InterruptReason.BUDGET:

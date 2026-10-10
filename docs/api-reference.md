@@ -16,10 +16,12 @@ without notice.
 | `guard()` | Decorator that wraps a tool-dispatch function with the circuit breaker. See [Quick start](../README.md#quick-start). |
 | `current_run()` | The active `Run` — innermost `with run(...)`, else the `init()` default, else `None`. |
 | `Run` | One guarded run: config, detectors, and a fresh `RunState`. Returned by `run()`. |
-| `AgentBrakeInterrupt` | Exception raised when a detector trips. Carries `.reason` and `.context`. |
+| `AgentBrakeInterrupt` | Exception raised when a detector trips. `str(e)` is one line (reason, tool, run_id); detail is on `.reason`, `.context`, `.receipt` (signed receipt summary, if minted), `.tool`, `.run_id`. |
 | `InterruptReason` | Enum: `LOOP`, `BUDGET`, `ESCALATION`, `TIMEOUT`, `FLOW`, `DELEGATION`. |
-| `RunState` | Per-run state: id, cost, call history, active taints. |
-| `ToolCall` | One recorded tool call: name, args, cost, outcome. |
+| `RunState` | Per-run state: id, cost, call history, active taints. `cost_is_estimate` is `True` when `total_cost_usd` includes the flat per-call placeholder. |
+| `ToolCall` | One recorded tool call: name, args, cost, outcome. `cost_estimated` marks the flat placeholder charge. |
+| `ESTIMATED_COST_PER_TOOL_CALL_USD` | The flat $0.01 charged per guarded call so `budget_usd` works unpriced. An estimate (call-count proxy), not a measured cost. |
+| `DEFAULT_LOOP_THRESHOLD` | Default `loop_threshold` (4): the 4th identical consecutive call is blocked. |
 | `LoopDetector`, `RetryStormDetector`, `BudgetDetector`, `EscalationDetector` | The four always-on detectors. See [What it detects](../README.md#what-it-detects). |
 | `cost_from_tokens(model, input_tokens, output_tokens)` | Estimate USD cost from token usage using the built-in `PRICING` table. |
 | `FlowPolicy`, `FlowRuleDetector`, `block_exfiltration(...)` | Taint-tracking flow control. See [Flow control](../README.md#flow-control-taint-tracking). |

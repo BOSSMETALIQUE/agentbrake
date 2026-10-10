@@ -140,6 +140,8 @@ def record(call: CometAPICall) -> None:
                 "model": call.model,
                 "cost_usd": call.cost_usd,
                 "total_cost_usd": active.state.total_cost_usd,
+                # True if guarded tool calls (flat placeholder) share the run.
+                "cost_is_estimate": active.state.cost_is_estimate,
             },
         )
 
