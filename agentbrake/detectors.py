@@ -3,7 +3,8 @@ from __future__ import annotations
 
 import hashlib
 import json
-from typing import Any, Dict, Iterable, List, Optional
+from decimal import Decimal
+from typing import Any, Dict, Iterable, List, Optional, Union
 
 from .types import InterruptReason, RunState, ToolCall, check_usd
 
@@ -181,15 +182,51 @@ class RetryStormDetector:
         return InterruptReason.LOOP
 
 
-class BudgetDetector:
-    """Flags when projected total cost would exceed the configured budget."""
+class _Unlimited:
+    """Type of :data:`UNLIMITED`; a single shared instance."""
 
-    def __init__(self, budget_usd: float):
+    _instance: Optional["_Unlimited"] = None
+
+    def __new__(cls) -> "_Unlimited":
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
+
+    def __repr__(self) -> str:
+        return "agentbrake.UNLIMITED"
+
+    def __reduce__(self) -> str:
+        return "UNLIMITED"
+
+
+# Pass as budget_usd for "no spending limit". A dedicated value rather than
+# None (which run() reads as "inherit from init()") or float("inf") (rejected:
+# an infinite amount is more often a bug than an intent).
+UNLIMITED = _Unlimited()
+
+Budget = Union[float, Decimal, _Unlimited]
+
+_BUDGET_HINT = "For no spending limit, pass budget_usd=agentbrake.UNLIMITED"
+
+
+class BudgetDetector:
+    """Flags when projected total cost would exceed the configured budget.
+
+    ``budget_usd=UNLIMITED`` disables the check (``self.budget_usd`` is None).
+    """
+
+    def __init__(self, budget_usd: Budget):
         # A NaN budget would compare False forever and never trip; a bool or
         # a string is a caller bug. Fail at configuration, not at spend time.
-        self.budget_usd = float(check_usd(budget_usd, "budget_usd"))
+        self.budget_usd: Optional[float] = (
+            None
+            if budget_usd is UNLIMITED
+            else float(check_usd(budget_usd, "budget_usd", _BUDGET_HINT))
+        )
 
     def check(self, run_state: RunState, new_call: ToolCall) -> Optional[InterruptReason]:
+        if self.budget_usd is None:
+            return None
         projected = run_state.total_cost_usd + new_call.cost_usd
         if projected > self.budget_usd:
             return InterruptReason.BUDGET

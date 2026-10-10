@@ -21,6 +21,7 @@ without notice.
 | `RunState` | Per-run state: id, cost, call history, active taints. `cost_is_estimate` is `True` when `total_cost_usd` includes the flat per-call placeholder. |
 | `ToolCall` | One recorded tool call: name, args, cost, outcome. `cost_estimated` marks the flat placeholder charge. |
 | `ESTIMATED_COST_PER_TOOL_CALL_USD` | The flat $0.01 charged per guarded call so `budget_usd` works unpriced. An estimate (call-count proxy), not a measured cost. |
+| `UNLIMITED` | Pass as `budget_usd` for no spending limit (in `run()`, overrides an inherited budget). `budget_usd` must otherwise be a finite amount ≥ 0; `inf`, NaN and `bool` are rejected. |
 | `DEFAULT_LOOP_THRESHOLD` | Default `loop_threshold` (4): the 4th identical consecutive call is blocked. |
 | `LoopDetector`, `RetryStormDetector`, `BudgetDetector`, `EscalationDetector` | The four always-on detectors. See [What it detects](../README.md#what-it-detects). |
 | `cost_from_tokens(model, input_tokens, output_tokens)` | Estimate USD cost from token usage using the built-in `PRICING` table. |

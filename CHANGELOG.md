@@ -57,6 +57,10 @@ Polish release from a field test on a real Claude agent. Backward compatible: no
 
 ### Added
 - `agentbrake --version`.
+- **`agentbrake.UNLIMITED`**: pass `budget_usd=agentbrake.UNLIMITED` for no spending limit. There was
+  no way to say so before (the default `0.0` blocks the first guarded call, `None` in `run()` means
+  "inherit from `init()`"). In `run()` it overrides an inherited budget. The error raised for an
+  infinite budget names it.
 
 ## [0.3.3] - 2026-10-09
 

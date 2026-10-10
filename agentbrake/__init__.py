@@ -26,6 +26,8 @@ from .delegation import (
 )
 from .detectors import (
     DEFAULT_LOOP_THRESHOLD,
+    UNLIMITED,
+    Budget,
     BudgetDetector,
     EscalationDetector,
     LoopDetector,
@@ -48,6 +50,7 @@ __all__ = [
     "RunState",
     "ToolCall",
     "BudgetDetector",
+    "UNLIMITED",
     "EscalationDetector",
     "LoopDetector",
     "DEFAULT_LOOP_THRESHOLD",
@@ -92,7 +95,7 @@ class Run:
         self,
         api_key: Optional[str] = None,
         allowed_tools: Optional[List[str]] = None,
-        budget_usd: float = 0.0,
+        budget_usd: Budget = 0.0,
         api_url: str = "http://localhost:8000",
         mode: str = "local",
         retry_max_calls_per_tool: int = 5,
@@ -267,7 +270,7 @@ _default_run: Optional[Run] = None
 def init(
     api_key: Optional[str] = None,
     allowed_tools: Optional[List[str]] = None,
-    budget_usd: float = 0.0,
+    budget_usd: Budget = 0.0,
     api_url: str = "http://localhost:8000",
     mode: str = "local",
     retry_max_calls_per_tool: int = 5,
@@ -285,6 +288,11 @@ def init(
     ``loop_threshold`` is the length of an identical-call streak that counts
     as a loop: the Nth identical consecutive call is blocked, the N-1 before
     it (a try plus its retries) run. Default 4.
+
+    ``budget_usd`` caps the run's spend; every guarded call is charged at
+    least the flat estimate, so the default 0.0 blocks the first call. Pass
+    ``budget_usd=agentbrake.UNLIMITED`` for no spending limit (an infinite
+    or NaN amount is rejected).
     """
     global _default_run
     _default_run = Run(
@@ -305,7 +313,7 @@ def init(
 def run(
     api_key: Optional[str] = None,
     allowed_tools: Optional[List[str]] = None,
-    budget_usd: Optional[float] = None,
+    budget_usd: Optional[Budget] = None,
     api_url: Optional[str] = None,
     mode: Optional[str] = None,
     retry_max_calls_per_tool: Optional[int] = None,

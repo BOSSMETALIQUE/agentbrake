@@ -13,25 +13,26 @@ from uuid import uuid4
 from pydantic import BaseModel, Field
 
 
-def check_usd(value: Any, field: str) -> Any:
+def check_usd(value: Any, field: str, hint: str = "") -> Any:
     """Return ``value`` if it is a usable USD amount, else raise.
 
     Accepts any real number (int, float, Fraction, numpy scalars) and Decimal.
     Rejects bool (``True`` is an int, but never a price), NaN and infinities
     (a NaN budget or cost compares False to everything, so a budget check
     would silently never fire) and negative amounts (a negative cost would
-    credit the budget back).
+    credit the budget back). ``hint`` is appended to every error message.
     """
+    suffix = f". {hint}" if hint else ""
     if isinstance(value, bool) or not isinstance(value, (numbers.Real, Decimal)):
         raise TypeError(
             f"{field} must be a number of US dollars (int, float or Decimal), "
-            f"got {type(value).__name__}: {value!r}"
+            f"got {type(value).__name__}: {value!r}{suffix}"
         )
     finite = value.is_finite() if isinstance(value, Decimal) else math.isfinite(value)
     if not finite:
-        raise ValueError(f"{field} must be a finite amount, got {value!r}")
+        raise ValueError(f"{field} must be a finite amount, got {value!r}{suffix}")
     if value < 0:
-        raise ValueError(f"{field} must be >= 0, got {value!r}")
+        raise ValueError(f"{field} must be >= 0, got {value!r}{suffix}")
     return value
 
 

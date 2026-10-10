@@ -109,6 +109,45 @@ def test_run_rejects_nan_budget():
         agentbrake.run(budget_usd=math.nan)
 
 
+@pytest.mark.parametrize("budget", [math.inf, float("inf"), Decimal("Infinity")])
+def test_infinite_budget_error_explains_unlimited(budget):
+    with pytest.raises(ValueError) as exc:
+        agentbrake.run(budget_usd=budget)
+    message = str(exc.value)
+    assert "budget_usd must be a finite amount" in message
+    assert "For no spending limit, pass budget_usd=agentbrake.UNLIMITED" in message
+
+
+def test_unlimited_budget_never_trips():
+    @agentbrake.guard()
+    def dispatch(name, args):
+        return "ok"
+
+    with agentbrake.run(allowed_tools=["t"], budget_usd=agentbrake.UNLIMITED) as r:
+        r.state.append(ToolCall(name="t", cost_usd=10**6))
+        assert dispatch("t", {"i": 1}) == "ok"
+        assert r.budget_detector.budget_usd is None
+
+
+def test_unlimited_is_inherited_and_overridable():
+    agentbrake.init(allowed_tools=["t"], budget_usd=agentbrake.UNLIMITED)
+    assert agentbrake.run().budget_detector.budget_usd is None
+    agentbrake.init(allowed_tools=["t"], budget_usd=1)
+    assert agentbrake.run(budget_usd=agentbrake.UNLIMITED).budget_detector.budget_usd is None
+
+
+def test_unlimited_is_a_singleton_that_survives_pickling():
+    import copy
+    import pickle
+
+    from agentbrake.detectors import _Unlimited
+
+    assert _Unlimited() is agentbrake.UNLIMITED
+    assert pickle.loads(pickle.dumps(agentbrake.UNLIMITED)) is agentbrake.UNLIMITED
+    assert copy.deepcopy(agentbrake.UNLIMITED) is agentbrake.UNLIMITED
+    assert repr(agentbrake.UNLIMITED) == "agentbrake.UNLIMITED"
+
+
 def test_int_budget_and_int_cost_block():
     det = BudgetDetector(2)
     state = RunState(total_cost_usd=2)
