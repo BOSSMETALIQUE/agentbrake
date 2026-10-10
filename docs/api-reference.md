@@ -33,7 +33,7 @@ without notice.
 
 | Symbol | What it is |
 |---|---|
-| `LoopDetector` | Flags when N consecutive calls share the same structural hash. |
+| `LoopDetector` | Flags when N consecutive calls share the same structural hash; the Nth is blocked. `threshold` defaults to `DEFAULT_LOOP_THRESHOLD` (4); set per run with `run(loop_threshold=...)` / `init(loop_threshold=...)`. |
 | `RetryStormDetector` | Flags when the same tool is hammered too many times in a recent window, even with changing args. |
 | `BudgetDetector` | Flags when projected total cost would exceed the configured budget. |
 | `EscalationDetector` | Flags when a tool call targets a name outside the allow-list. |

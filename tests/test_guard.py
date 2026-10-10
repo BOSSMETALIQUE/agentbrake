@@ -141,17 +141,69 @@ def test_successful_call_is_recorded_with_ok_outcome():
 
 def test_repeated_failing_call_trips_loop_detector():
     with agentbrake.run(allowed_tools=["t"], budget_usd=10.0) as r:
-        for _ in range(2):
+        # A try plus two retries all run: that is normal retry behavior.
+        for _ in range(3):
             with pytest.raises(RuntimeError):
                 dispatch("t", {"boom": True})
 
         with pytest.raises(AgentBrakeInterrupt) as ei:
             dispatch("t", {"boom": True})
         assert ei.value.reason is InterruptReason.LOOP
-        # The third attempt was intercepted before execution: only the two
+        # The fourth attempt was intercepted before execution: only the three
         # real (failed) attempts are in the history.
-        assert len(r.state.calls) == 2
+        assert len(r.state.calls) == 3
         assert all(c.outcome == "error" for c in r.state.calls)
+
+
+def test_two_failures_then_retry_is_not_a_loop():
+    # The field report: get_price(ABC) failed twice, the third attempt was
+    # interrupted as a "loop". With the default threshold it now runs.
+    with agentbrake.run(allowed_tools=["get_price"], budget_usd=10.0) as r:
+        for _ in range(2):
+            with pytest.raises(RuntimeError):
+                dispatch("get_price", {"symbol": "ABC", "boom": True})
+        assert dispatch("get_price", {"symbol": "ABC"}) == "get_price-ok"
+        assert r.state.status == "running"
+
+
+def test_successful_identical_calls_still_trip_at_default():
+    # A real loop: the same successful call, over and over.
+    with agentbrake.run(allowed_tools=["t"], budget_usd=10.0):
+        for _ in range(agentbrake.DEFAULT_LOOP_THRESHOLD - 1):
+            dispatch("t", {"q": "news"})
+        with pytest.raises(AgentBrakeInterrupt) as ei:
+            dispatch("t", {"q": "news"})
+        assert ei.value.reason is InterruptReason.LOOP
+
+
+def test_loop_threshold_is_configurable_per_run():
+    # The pre-0.3.4 behavior stays one argument away.
+    with agentbrake.run(allowed_tools=["t"], budget_usd=10.0, loop_threshold=3):
+        for _ in range(2):
+            dispatch("t", {})
+        with pytest.raises(AgentBrakeInterrupt):
+            dispatch("t", {})
+
+    with agentbrake.run(allowed_tools=["t"], budget_usd=10.0, loop_threshold=6,
+                        retry_max_calls_per_tool=10):
+        for _ in range(5):
+            dispatch("t", {})
+        with pytest.raises(AgentBrakeInterrupt):
+            dispatch("t", {})
+
+
+def test_loop_threshold_is_inherited_from_init():
+    agentbrake.init(allowed_tools=["t"], budget_usd=10.0, loop_threshold=2)
+    with agentbrake.run() as r:
+        assert r.loop_detector.threshold == 2
+        dispatch("t", {})
+        with pytest.raises(AgentBrakeInterrupt):
+            dispatch("t", {})
+
+
+def test_loop_threshold_below_two_is_rejected():
+    with pytest.raises(ValueError):
+        agentbrake.run(loop_threshold=1)
 
 
 def test_failed_calls_count_toward_budget():

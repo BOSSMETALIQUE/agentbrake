@@ -7,7 +7,7 @@ detail; this table is the index.
 | File | Demonstrates | Prerequisites | Run |
 |---|---|---|---|
 | [`00_config_snippet.py`](00_config_snippet.py) | Minimal `agentbrake.init()` config (not runnable standalone — used in the demo video intro) | — | — |
-| [`01_loop_detection.py`](01_loop_detection.py) | `LoopDetector` trips on 3 consecutive identical tool calls | `ANTHROPIC_API_KEY` in `.env`, LangGraph deps (`pip install -r requirements.txt`) | `python examples/01_loop_detection.py` |
+| [`01_loop_detection.py`](01_loop_detection.py) | `LoopDetector` trips on the 4th consecutive identical tool call | `ANTHROPIC_API_KEY` in `.env`, LangGraph deps (`pip install -r requirements.txt`) | `python examples/01_loop_detection.py` |
 | [`02_budget_runaway.py`](02_budget_runaway.py) | `BudgetDetector` trips on cumulative cost overrun | Same as above | `python examples/02_budget_runaway.py` |
 | [`03_privilege_escalation.py`](03_privilege_escalation.py) | `EscalationDetector` blocks a tool outside the allowlist | Same as above | `python examples/03_privilege_escalation.py` |
 | [`04_remote_validation.py`](04_remote_validation.py) | Remote mode: human-in-the-loop approve/kill via the FastAPI backend | Same as above, plus a running backend (`uvicorn agentbrake.server.main:app --port 8000`) and `AGENTBRAKE_SDK_SECRET` set in both processes | `python examples/04_remote_validation.py` |

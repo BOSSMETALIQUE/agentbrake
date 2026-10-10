@@ -23,6 +23,7 @@ from .delegation import (
     record_event as _record_delegation_event,
 )
 from .detectors import (
+    DEFAULT_LOOP_THRESHOLD,
     BudgetDetector,
     EscalationDetector,
     LoopDetector,
@@ -47,6 +48,7 @@ __all__ = [
     "BudgetDetector",
     "EscalationDetector",
     "LoopDetector",
+    "DEFAULT_LOOP_THRESHOLD",
     "RetryStormDetector",
     "cost_from_tokens",
     "FlowPolicy",
@@ -92,6 +94,7 @@ class Run:
         flow_policy: Optional[FlowPolicy] = None,
         receipts_path: Optional[str] = None,
         delegation: Optional[object] = None,
+        loop_threshold: int = DEFAULT_LOOP_THRESHOLD,
     ):
         if mode not in {"local", "remote"}:
             raise ValueError("mode must be 'local' or 'remote'")
@@ -105,7 +108,8 @@ class Run:
         self.retry_progress_aware = retry_progress_aware
         self.flow_policy = flow_policy
         self.receipts_path = receipts_path
-        self.loop_detector = LoopDetector()
+        self.loop_threshold = loop_threshold
+        self.loop_detector = LoopDetector(threshold=loop_threshold)
         self.retry_storm_detector = RetryStormDetector(
             max_calls_per_tool=retry_max_calls_per_tool,
             window=retry_window,
@@ -233,11 +237,16 @@ def init(
     retry_progress_aware: bool = True,
     flow_policy: Optional[FlowPolicy] = None,
     receipts_path: Optional[str] = None,
+    loop_threshold: int = DEFAULT_LOOP_THRESHOLD,
 ) -> None:
     """Configure the process-wide default run. Resets all state on each call.
 
     Guarded calls made outside a `with agentbrake.run(...)` block share this
     default run. For per-task isolation, prefer run().
+
+    ``loop_threshold`` is the length of an identical-call streak that counts
+    as a loop: the Nth identical consecutive call is blocked, the N-1 before
+    it (a try plus its retries) run. Default 4.
     """
     global _default_run
     _default_run = Run(
@@ -251,6 +260,7 @@ def init(
         retry_progress_aware=retry_progress_aware,
         flow_policy=flow_policy,
         receipts_path=receipts_path,
+        loop_threshold=loop_threshold,
     )
 
 
@@ -266,6 +276,7 @@ def run(
     flow_policy: Optional[FlowPolicy] = None,
     receipts_path: Optional[str] = None,
     delegation: Optional[object] = None,
+    loop_threshold: Optional[int] = None,
 ) -> Run:
     """Create an isolated Run; use it as a context manager.
 
@@ -320,6 +331,11 @@ def run(
         ),
         # Deliberately not inherited from init(): a token authorizes one task.
         delegation=delegation,
+        loop_threshold=(
+            loop_threshold
+            if loop_threshold is not None
+            else (base.loop_threshold if base else DEFAULT_LOOP_THRESHOLD)
+        ),
     )
 
 

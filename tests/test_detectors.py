@@ -31,6 +31,25 @@ def test_loop_detector_flags_third_identical_call():
     assert detector.check(state, _call(args=base_args)) is InterruptReason.LOOP
 
 
+def test_loop_detector_default_threshold_is_four():
+    detector = LoopDetector()
+    assert detector.threshold == 4
+    state = RunState()
+    for _ in range(3):
+        assert detector.check(state, _call()) is None
+        state.append(_call())
+    assert detector.check(state, _call()) is InterruptReason.LOOP
+
+
+def test_loop_detector_streak_must_be_consecutive():
+    detector = LoopDetector()
+    state = RunState()
+    for name in ("search", "search", "read", "search"):
+        state.append(_call(name=name))
+    # Only one identical call precedes the new one: the streak was broken.
+    assert detector.check(state, _call()) is None
+
+
 def test_loop_detector_ignores_when_args_differ():
     detector = LoopDetector(threshold=3)
     state = RunState()

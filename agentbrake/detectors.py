@@ -85,15 +85,28 @@ def _looks_like_progress(prior_same_tool: List[ToolCall], new_call: ToolCall) ->
     return False
 
 
+# Length of an identical-call streak that counts as a loop. 4 lets the common
+# "1 attempt + 2 retries" policy (the OpenAI and Anthropic SDKs' default
+# max_retries=2, tenacity's usual stop_after_attempt(3)) run to completion and
+# stops the 4th identical call — still one call before the same-tool
+# RetryStormDetector (default 5) would.
+# Until 0.3.3 this was 3, which interrupted a plain retry-after-two-failures.
+DEFAULT_LOOP_THRESHOLD = 4
+
+
 class LoopDetector:
     """Flags when N consecutive calls share the same structural hash.
 
     This catches *exact* repetition: the agent calling the same tool with the
     same arguments over and over (e.g. search("news") -> search("news") -> ...).
     For same-tool loops where only the arguments change, use RetryStormDetector.
+
+    ``threshold`` is the number of identical consecutive calls that counts as
+    a loop: the ``threshold``-th one is blocked before it runs, so
+    ``threshold - 1`` attempts (one try plus its retries) always go through.
     """
 
-    def __init__(self, threshold: int = 3):
+    def __init__(self, threshold: int = DEFAULT_LOOP_THRESHOLD):
         if threshold < 2:
             raise ValueError("threshold must be >= 2")
         self.threshold = threshold

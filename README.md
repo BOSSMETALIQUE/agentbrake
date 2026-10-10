@@ -68,7 +68,7 @@ except AgentBrakeInterrupt as e:
 
 | Detector | What it catches | Example | Default behavior |
 |---|---|---|---|
-| **Loop** | 3 consecutive tool calls with the same name + structurally identical args | Agent repeatedly calls `search({"q": "weather"})` after a malformed response | Local: raise `AgentBrakeInterrupt(LOOP)` · Remote: request human validation |
+| **Loop** | 4 consecutive tool calls with the same name + structurally identical args (a try plus two retries still run; tune with `loop_threshold=`) | Agent repeatedly calls `search({"q": "weather"})` after a malformed response | Local: raise `AgentBrakeInterrupt(LOOP)` · Remote: request human validation |
 | **Retry storm** | The same tool hammered too many times in a recent window, even with *changing* args or interleaved with other calls; progress-aware so real pagination passes | Agent calls `search("A")`, `search("B")`, `search("C")`… or alternates `search`/`read` forever | Local: raise `AgentBrakeInterrupt(LOOP)` · Remote: request human validation |
 | **Budget** | Cumulative cost exceeds the configured `budget_usd` ceiling | Long-running agent burns past its $5 cap overnight | Local: raise `AgentBrakeInterrupt(BUDGET)` · Remote: request human validation |
 | **Escalation** | Tool name is not in the configured `allowed_tools` list | Agent tries to call `delete_database` when only `search` and `read_file` are allowed | Local: raise `AgentBrakeInterrupt(ESCALATION)` · Remote: request human validation |
