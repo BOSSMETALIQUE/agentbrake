@@ -85,6 +85,48 @@ def test_verify_unknown_key_failure_makes_no_claim(tmp_path, capsys, monkeypatch
     assert "x head_signature:" in out
 
 
+def _write_ledger(tmp_path, rows: list):
+    path = tmp_path / "receipts.jsonl"
+    with path.open("w", encoding="utf-8") as fh:
+        for row in rows:
+            fh.write(json.dumps(row, sort_keys=True) + "\n")
+    return path
+
+
+@pytest.mark.parametrize("n_rows", [1, 3])
+def test_verify_on_raw_ledger_points_to_export(tmp_path, capsys, n_rows):
+    # One row parses as a JSON object, several do not parse at all: both are
+    # the same user mistake and get the same short answer.
+    path = _write_ledger(tmp_path, _mint_rows(n_rows))
+
+    assert cli.main(["verify", str(path)]) == 2
+    captured = capsys.readouterr()
+    assert "raw receipt ledger" in captured.err
+    assert f"agentbrake export --receipts {path}" in captured.err
+    assert "VERIFICATION FAILED" not in captured.out
+    assert "entries:" not in captured.out
+
+
+def test_verify_receipt_on_raw_ledger_points_to_prove(tmp_path, capsys):
+    path = _write_ledger(tmp_path, _mint_rows(2))
+    assert cli.main(["verify-receipt", str(path)]) == 2
+    assert f"agentbrake prove --receipts {path}" in capsys.readouterr().err
+
+
+def test_report_on_raw_ledger_points_to_export(tmp_path, capsys):
+    path = _write_ledger(tmp_path, _mint_rows(2))
+    assert cli.main(["report", str(path), "-o", str(tmp_path / "r.md")]) == 2
+    assert "raw receipt ledger" in capsys.readouterr().err
+    assert not (tmp_path / "r.md").exists()
+
+
+def test_verify_on_unrelated_json_is_still_a_plain_failure(tmp_path, capsys):
+    path = tmp_path / "other.json"
+    path.write_text(json.dumps({"hello": "world"}), encoding="utf-8")
+    assert cli.main(["verify", str(path)]) == 1
+    assert "raw receipt ledger" not in capsys.readouterr().err
+
+
 def test_verify_receipt_failure_hides_guarantees(tmp_path, capsys):
     proof = export_mod.build_receipt_proof(_mint_rows(3), 2, signer=TEST_SIGNER)
     proof["entry"]["signature"] = "00" * 64

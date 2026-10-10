@@ -179,11 +179,55 @@ class _UsageError(Exception):
     """Bad input on the command line or an unreadable file; exit code 2."""
 
 
-def _load_json(path_str: str, what: str) -> dict:
+# Fields every stored receipt row carries (see receipts._seal_and_append).
+_LEDGER_ROW_FIELDS = frozenset({"seq", "attestation_json", "signature", "entry_hash"})
+
+
+def _is_ledger_row(obj: object) -> bool:
+    return isinstance(obj, dict) and "format" not in obj and _LEDGER_ROW_FIELDS <= obj.keys()
+
+
+def _is_jsonl_ledger(text: str) -> bool:
+    """True when every non-empty line is one stored receipt row."""
+    lines = [line for line in text.splitlines() if line.strip()]
+    if not lines:
+        return False
     try:
-        return json.loads(Path(path_str).expanduser().read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as e:
+        return all(_is_ledger_row(json.loads(line)) for line in lines)
+    except json.JSONDecodeError:
+        return False
+
+
+def _load_json(path_str: str, what: str, *, ledger_hint: Optional[str] = None) -> dict:
+    """Load a bundle/proof document, refusing a raw receipts ledger up front.
+
+    A raw ``receipts.jsonl`` is not a bundle: it has no head, no public key and
+    no format marker, so "verifying" it could only end in a misleading
+    ``entries: 0 ... VERIFICATION FAILED``. ``ledger_hint`` is the command to
+    suggest instead.
+    """
+    try:
+        text = Path(path_str).expanduser().read_text(encoding="utf-8")
+    except OSError as e:
         raise _UsageError(f"cannot read {what} {path_str}: {e}") from e
+    try:
+        document = json.loads(text)
+    except json.JSONDecodeError as e:
+        if _is_jsonl_ledger(text):
+            raise _UsageError(_raw_ledger_message(path_str, what, ledger_hint)) from e
+        raise _UsageError(f"cannot read {what} {path_str}: {e}") from e
+    if _is_ledger_row(document):
+        raise _UsageError(_raw_ledger_message(path_str, what, ledger_hint))
+    return document
+
+
+def _raw_ledger_message(path_str: str, what: str, hint: Optional[str]) -> str:
+    hint = hint or "agentbrake export --receipts {path} -o receipts_export.json"
+    return (
+        f"{path_str} is a raw receipt ledger (receipts.jsonl), not a {what}.\n"
+        f"  Run first: {hint.format(path=path_str)}\n"
+        f"  then pass the file it writes to this command."
+    )
 
 
 def _pinned_keys(args: argparse.Namespace) -> Optional[Dict[str, str]]:
@@ -281,7 +325,11 @@ def _cmd_prove(args: argparse.Namespace) -> int:
 
 
 def _cmd_verify_receipt(args: argparse.Namespace) -> int:
-    proof = _load_json(args.proof, "receipt proof")
+    proof = _load_json(
+        args.proof,
+        "receipt proof",
+        ledger_hint="agentbrake prove --receipts {path} --seq N -o receipt_proof.json",
+    )
     pinned = _pinned_keys(args)
     hmac_key = args.hmac_key.encode("utf-8") if args.hmac_key else None
     report = export_mod.verify_receipt_proof(
