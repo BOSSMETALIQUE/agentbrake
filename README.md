@@ -10,7 +10,7 @@
 
 > 🇪🇺 **EU AI Act: high-risk obligations deferred, not dropped.** The Digital Omnibus (Regulation (EU) 2026/1744, in force 27 July 2026) moved the Annex III standalone high-risk deadline to **2 December 2027**, and Annex I AI embedded in regulated products to **2 August 2028**. Article 50 transparency duties were not deferred. That is lead time to build an evidence trail, not a reason to skip one. AgentBrake produces cryptographic proof of every enforcement decision, verifiable offline by a third party with only the public key. See [Security coverage](#security-coverage---owasp-top-10-for-agentic-applications-2026).
 
-> **Status:** v0.3.3, on PyPI (`pip install py-agentbrake`). Local mode is stable (323/323 tests passing). Every enforcement decision (human approvals, autonomous blocks, delegation violations) produces a **signed, hash-chained receipt** that a third party verifies offline with the standalone `agentbrake verify` CLI (see [Verifiable receipts](#verifiable-receipts)). A **flow-control engine with taint tracking** stops prompt-injection → exfiltration (see [Flow control](#flow-control-taint-tracking)), and **signed delegation tokens** carry the original user intent across agent hops (see [Delegation](#delegation-inter-agent-trust)). Looking for early users to validate the API.
+> **Status:** v0.3.4, on PyPI (`pip install py-agentbrake`). Local mode is stable (423 tests passing, 3 skipped). Every enforcement decision (human approvals, autonomous blocks, delegation violations) produces a **signed, hash-chained receipt** that a third party verifies offline with the standalone `agentbrake verify` CLI (see [Verifiable receipts](#verifiable-receipts)). A **flow-control engine with taint tracking** stops prompt-injection → exfiltration (see [Flow control](#flow-control-taint-tracking)), and **signed delegation tokens** carry the original user intent across agent hops (see [Delegation](#delegation-inter-agent-trust)). Looking for early users to validate the API.
 
 ## The problem
 
@@ -63,8 +63,11 @@ from agentbrake import AgentBrakeInterrupt
 try:
     agent.run("do the thing")
 except AgentBrakeInterrupt as e:
-    print(f"Stopped: {e.reason}")  # LOOP, BUDGET, ESCALATION, FLOW, or DELEGATION
+    print(f"Stopped: {e.reason.name}")  # LOOP, BUDGET, ESCALATION, FLOW, DELEGATION, or TIMEOUT (remote)
+    print(e)  # one line: reason, tool, run_id; full detail on e.context / e.receipt
 ```
+
+`budget_usd` defaults to `0.0`, and every guarded call costs at least the $0.01 estimate, so a run with no budget blocks its first call (the interrupt says so). Set an amount, or `budget_usd=agentbrake.UNLIMITED` for no spending limit.
 
 ## What it detects
 
@@ -72,7 +75,7 @@ except AgentBrakeInterrupt as e:
 |---|---|---|---|
 | **Loop** | 4 consecutive tool calls with the same name + structurally identical args (a try plus two retries still run; tune with `loop_threshold=`) | Agent repeatedly calls `search({"q": "weather"})` after a malformed response | Local: raise `AgentBrakeInterrupt(LOOP)` · Remote: request human validation |
 | **Retry storm** | The same tool hammered too many times in a recent window, even with *changing* args or interleaved with other calls; progress-aware so real pagination passes | Agent calls `search("A")`, `search("B")`, `search("C")`… or alternates `search`/`read` forever | Local: raise `AgentBrakeInterrupt(LOOP)` · Remote: request human validation |
-| **Budget** | Cumulative cost exceeds the configured `budget_usd` ceiling | Long-running agent burns past its $5 cap overnight | Local: raise `AgentBrakeInterrupt(BUDGET)` · Remote: request human validation |
+| **Budget** | The call would push cumulative cost past the configured `budget_usd` ceiling (default `0.0`; `agentbrake.UNLIMITED` disables it) | Long-running agent burns past its $5 cap overnight | Local: raise `AgentBrakeInterrupt(BUDGET)` · Remote: request human validation |
 | **Escalation** | Tool name is not in the configured `allowed_tools` list | Agent tries to call `delete_database` when only `search` and `read_file` are allowed | Local: raise `AgentBrakeInterrupt(ESCALATION)` · Remote: request human validation |
 | **Flow** | An allow-listed tool is called in a forbidden *sequence*, e.g. an egress sink after the run was tainted by untrusted input | Agent reads an attacker-controlled page, then tries to `send_email` the data out | Local: raise `AgentBrakeInterrupt(FLOW)` + mint a [signed receipt](#verifiable-receipts) · Remote: request human validation |
 | **Delegation** | A tool call outside the scope of the [signed grant](#delegation-inter-agent-trust) the agent is acting under, or an expired / invalid token | A finance agent, delegated only `issue_refund`, reaches for `send_email` | Local: raise `AgentBrakeInterrupt(DELEGATION)` + mint a signed receipt · Remote: request human validation |
