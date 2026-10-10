@@ -92,9 +92,47 @@ class RunState(BaseModel):
 
 
 class AgentBrakeInterrupt(Exception):
-    """Raised when a detector trips on a tool call."""
+    """Raised when a detector trips on a tool call.
+
+    ``str(e)`` is one readable line — reason, tool, run_id — because it ends up
+    in logs and, very often, in the tool result handed back to the model. The
+    full detail stays on the exception: ``e.context`` (run state, pending call,
+    flow/delegation explanation) and ``e.receipt`` (the signed receipt summary,
+    when one was minted).
+    """
 
     def __init__(self, reason: InterruptReason, context: Optional[Dict[str, Any]] = None):
         self.reason = reason
         self.context = context or {}
-        super().__init__(f"AgentBrake interrupt: {reason.value} | context={self.context}")
+        super().__init__(self._summary())
+
+    @property
+    def tool(self) -> Optional[str]:
+        return self.context.get("tool") or self.context.get("tool_name")
+
+    @property
+    def run_id(self) -> Optional[str]:
+        return self.context.get("run_id")
+
+    @property
+    def receipt(self) -> Optional[Dict[str, Any]]:
+        return self.context.get("receipt")
+
+    def _summary(self) -> str:
+        parts = [f"AgentBrake interrupt: {self.reason.value}"]
+        if self.tool:
+            # The tool name is model-chosen (an escalation is, by definition,
+            # a name we did not expect): repr() escapes any newline so the
+            # message stays one line, and the cap keeps it readable.
+            name = str(self.tool)
+            if len(name) > 80:
+                name = name[:77] + "..."
+            parts.append(f"on tool {name!r}")
+        if self.run_id:
+            parts.append(f"(run_id={self.run_id})")
+        return " ".join(parts)
+
+    def __reduce__(self):
+        # Exception pickles as cls(*self.args), and args holds only the summary
+        # line; rebuild from the real constructor arguments instead.
+        return (type(self), (self.reason, self.context))
