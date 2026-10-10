@@ -537,13 +537,193 @@ inherited, not fixed here.
 
 ## 7. Decision 6: signed receipts and the signing key
 
+**The trap from 0.3.3.** Receipts were written to a file but signed with a
+key generated for the process, so they could not be verified once the
+process exited. 0.3.4 added `EphemeralSigningKeyWarning`.
+
+**In a proxy, a warning is not enough.** The client captures the proxy's
+stderr and usually hides it: Claude Code shows server stderr only in debug
+logs. And a proxy runs for hours. A warning nobody reads followed by a day of
+unverifiable receipts would be the 0.3.3 failure again.
+
+**Decision:**
+
+1. **Key resolution order**:
+   1. `AGENTBRAKE_SIGNING_KEY_FILE`;
+   2. `AGENTBRAKE_SIGNING_SEED`;
+   3. new, proxy only: **the default path `~/.agentbrake/signing_key.pem`, if
+      it exists**. The path is built from `Path.home()`, as in the 0.3.4
+      warning, because `~` is not expanded by Windows cmd.
+2. **If nothing resolves, the proxy refuses to start.** It exits with code 2
+   and prints the one-time command:
+   `agentbrake keygen -o "<home>/.agentbrake/signing_key.pem"`. The client
+   then reports that the server failed to connect. That failure is loud, and
+   fixing it is a one-time step.
+3. **`--ephemeral-receipts`** opts into a throwaway key explicitly, for
+   tests and demos. The proxy then writes a first line in the receipts file
+   saying the key is ephemeral, so the file itself warns its reader.
+4. **The proxy never creates a key on its own.** This keeps the 0.3.4
+   position: a private key appearing on disk unasked is a risk the user
+   should choose to take. `agentbrake keygen` already refuses to overwrite a
+   key and sets mode `0600`.
+5. **Receipts path**: `--receipts`, defaulting to
+   `~/.agentbrake/mcp-proxy/<name>-<UTC timestamp>-<pid>.jsonl`. There is one
+   file per process: two Claude Code windows start two proxies for the same
+   server, and `JsonlLedger` does not coordinate writers across processes.
+   `agentbrake export` / `verify` work on each file as they do today.
+
+**Enforcement never depends on the key.** A missing key stops the proxy from
+*starting*; it never turns enforcement off.
+
 ## 8. Decision 7: failure behaviour
+
+**Fail-closed everywhere.** A proxy that fails open is worse than no proxy,
+because it looks protective while protecting nothing.
+
+| Failure | Behaviour |
+|---|---|
+| Policy missing, invalid JSON, unknown key, `validate()` error | Refuse to start, exit 2, reason on stderr. `--check` reports the same. |
+| No persistent signing key | Refuse to start (§7). |
+| Exception in a detector or in the decision path | **Block** that call (`isError`, reason `internal`), traceback on stderr, keep serving. One bad call must neither take the server down nor go through. |
+| Line from the client that is not JSON, or not JSON-RPC | Not forwarded. Answer `-32700` (parse error) or `-32600` (invalid request), with `id: null` when the id cannot be read [S1]. |
+| Line from the server on stdout that is not a valid message | Not forwarded, since the client must only receive MCP messages [S4]. Logged on stderr. If it was meant as the reply to a pending request, that request gets `-32603`. |
+| Server exits | In-flight requests get `-32603` "upstream server exited". v1: the proxy then exits with a non-zero code, so the client sees the server go away (see open questions about restarting the child inside the proxy). |
+| Client closes the proxy's stdin | Close the child's stdin, wait, then terminate it (SIGTERM, then SIGKILL; `TerminateProcess` on Windows) [S4]. |
+| Proxy itself crashes | The client loses the server. Nothing bypasses the proxy, because it is the only path to the child. |
+| Line exceeding the size limit | Treated as malformed (above). The limit is configurable, generous by default, and never unbounded. |
+
+An `--audit-only` mode (log what *would* be blocked, block nothing) would
+help adoption, but it is fail-open by design. If it ever exists it must be
+opt-in, announce itself on every start, and mark every receipt. It is not
+part of v1.
 
 ## 9. Decision 8: limits
 
+The proxy **does not protect** against what follows. These sentences are
+meant to go into the README word for word.
+
+- **A client that does not go through it.** The proxy guards one entry in
+  one client's MCP configuration. It is bypassed entirely by the same server
+  configured again without the proxy, by another client, or by someone
+  editing the configuration.
+- **Anything that is not an MCP tool call.** It does not see the agent's
+  built-in tools (shell, file edits and web fetch in Claude Code), HTTP
+  requests made directly by agent code, or MCP servers that are not wrapped.
+  An agent with a shell can exfiltrate data without ever calling an MCP sink.
+- **The content of arguments and results.** Decisions rest on tool names,
+  the call history, and, for `allow_args`, recipient fields. The proxy does
+  not read message bodies, does not detect prompt injection, and does not
+  inspect what a result contains. An injected sentence still reaches an
+  allowed recipient.
+- **Flows across separately proxied servers** (§4). Reading on server A and
+  sending through server B is not blocked when A and B have separate
+  proxies, until aggregator mode exists.
+- **What a server does on its own.** A tool that sends data out as a side
+  effect, under a name the policy classified as `neutral` or as a source, is
+  not treated as egress. The protection is only as good as the
+  classification.
+- **Tool descriptions that change mid-run** ("rug pull") are not detected.
+  Only new tool names are hidden.
+- **Non-tool methods** are relayed, not policed, in v1:
+  - `resources/read` and `prompts/get`;
+  - the legacy server-to-client requests `sampling/createMessage` and
+    `elicitation/create`.
+  A resource read can bring untrusted content into the context without
+  tainting the run.
+- **The proxy does not stop the agent.** It refuses calls, and the client
+  decides what happens next (§5).
+- **Taint never expires within a proxy's lifetime.** Legitimate egress can
+  stay blocked for the rest of a session (over-blocking). Restarting the
+  proxy clears all state, taint included.
+- **The budget is an estimate** of tool calls, not of model spend (§3).
+
 ## 10. Decision 9: tests
 
+**A fake MCP server**, `tests/fake_mcp_server.py`: a plain Python script that
+the proxy launches as its child. It is configured by arguments:
+
+- `--era modern|legacy|dual`;
+- tools:
+  - `fetch_url`: returns a text result;
+  - `send_email`: appends its arguments to a file the test reads, so a test
+    can assert it was **never** called;
+  - `secret_tool`: not in the test policy;
+  - `failing`: always returns `isError: true`;
+  - `crash`: exits the process;
+  - `garbage`: writes a non-JSON line on stdout;
+  - `slow`: sleeps, for concurrency and cancellation;
+- `--list-changed`: adds a tool after the first call and emits
+  `list_changed`;
+- `--page-size N`: paginates `tools/list`.
+
+Tests run the proxy as a subprocess and drive its stdin/stdout as a client
+would, asserting on exact lines and on the receipts file.
+
+| Case | Expected |
+|---|---|
+| Allowed call | `fetch_url` passes. The server's response line reaches the client byte for byte. |
+| Blocked call (flow) | `fetch_url` then `send_email(to=x@evil.com)`: an `isError` result. `send_email` never reaches the server. One `flow` receipt, which verifies. The refusal text does not contain `x@evil.com`. |
+| `allow_args` exemption | Same sequence with `to=me@example.com`: passes, `flow_allow` receipt. |
+| Loop and retry storm | 4 identical calls: the 4th is blocked. `failing` with `page=1..5`: the 5th is blocked, which exercises the 0.3.5 rule with outcomes taken from `isError`. |
+| `tools/list` filtered | `secret_tool` absent; order preserved; `nextCursor` kept on every page; `cacheScope` set to `"private"` (modern). |
+| Hidden tool called | `secret_tool` gets `-32602` "Unknown tool"; `escalation` receipt; the server never sees the call. |
+| `list_changed` | The tool added by the server stays hidden after the notification. |
+| Server crashes | The pending request gets `-32603`; the proxy exits non-zero; the test enforces a timeout so a hang fails it. |
+| Malformed message from the client | `-32700` with `id: null`; nothing written to the server. |
+| Malformed message from the server | Line dropped, stderr logged, pending request gets `-32603`. |
+| Large message | A 10 MB result passes. `asyncio.StreamReader` limits lines to 64 KiB by default, so the proxy must raise that limit (bounded and configurable). |
+| Unknown method and unknown fields | Relayed byte for byte, including `_meta` keys, `progressToken` and `traceparent`. |
+| Concurrency | Two `slow` calls in flight; responses matched by id; detector state stays consistent. |
+| Eras | Legacy: `initialize` relayed; refusals carry no `resultType`. Modern: `server/discover` relayed; refusals carry `resultType`. A dual-era client probing through the proxy reaches the right era. |
+| MRTR | An `InputRequiredResult` is relayed, and the retry with `requestState` is checked again by the policy. |
+| Legacy server→client request | `sampling/createMessage` from the server reaches the client, and the client's reply reaches the server. |
+| Cancellation | `notifications/cancelled` is relayed; for a call the proxy already refused, nothing more is sent. |
+| Fail-closed internals | A detector that raises (injected in the test) blocks the call, and the proxy keeps serving. |
+| Startup refusals | No key: exit 2, keygen command on stderr. Invalid policy: exit 2. `--check` returns 0 or 1. |
+| Windows | Pipes in binary mode: in text mode Windows would turn `\n` into `\r\n`. The suite runs on Windows in CI. |
+| Interop (Python 3.10+ job) | The official `mcp` SDK client against the official SDK server, through the proxy, in both eras. |
+
 ## 11. Decision 10: implementation plan
+
+Each step ships on its own with its tests, and none breaks the existing API.
+
+0. **Expose a pre/post decision API in the library.** Today the detector
+   pipeline lives inside `guard()`'s wrapper, around a synchronous function
+   call. A proxy forwards a request and receives the answer later, with other
+   calls possibly in flight.
+   - Extract `Run.precheck(call) -> Decision` (detectors, receipts, append
+     under a lock) and `Run.record_outcome(call, outcome)`, and rebuild
+     `guard()` on top of them. **No behaviour change**: the existing suite
+     must pass untouched.
+   - Outcome mapping for the proxy: `ok` is a result without `isError`;
+     `error` is `isError: true` or a JSON-RPC error. This matters since
+     0.3.5, because the retry-storm pagination exemption depends on
+     outcomes.
+1. **Policy loader and `--check`.** JSON maps to `allowed_tools`,
+   `FlowPolicy` and the `Run` arguments. Strict validation, and key
+   resolution (§7). No MCP code yet.
+2. **Transparent stdio relay, no policy.** Child process, binary pipes, line
+   framing with a raised and bounded size limit, stderr pass-through,
+   shutdown, and exit propagation. Fake server, framing and lifecycle tests,
+   on Linux and Windows.
+3. **Enforcement.** `tools/call` decisions, refusals (§5), `tools/list`
+   filtering (§6), receipts (§7), fail-closed paths (§8), and the limits of
+   §9 written in the README. First usable release: **0.4.0**.
+4. **Era coverage.** Modern and legacy conformance against the fake server
+   (`initialize`, `server/discover`, MRTR, `subscriptions/listen`, legacy
+   server-to-client requests), plus the interop job with the official SDK.
+5. **Aggregator mode.** `--config FILE` listing several servers, prefixed
+   tool names, id remapping, merged discovery. This gives cross-server flow
+   control (§4).
+6. **Helpers.**
+   - `suggest-policy`: draft a policy from `tools/list` and the
+     annotations, for review.
+   - An optional "every `resources/read` taints as X".
+   - An out-of-band taint reset, if the open question is settled in its
+     favour.
+7. **HTTP.** Back-end HTTP first: stdio in front, a remote server behind.
+   Front-end HTTP only as an optional extra, with an authorization design
+   that does not pass tokens through [S10].
 
 ## Open questions
 
