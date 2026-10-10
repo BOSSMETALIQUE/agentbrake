@@ -143,6 +143,117 @@ def test_guard_storm_detection_can_be_loosened():
                 dispatch("t", {"x": i, "boom": True})  # 10 failing, varied -> still allowed
 
 
+# --- progress exemption needs successes (0.3.5) -----------------------------
+# Measured in docs/research/cost-measurement.md: page=1,2,3... against a tool
+# that always fails ran 30 turns unchecked, because a monotonic numeric
+# argument alone counted as progress. These run with the library defaults
+# (5 same-tool calls in a window of 10, progress_aware on).
+
+@agentbrake.guard()
+def always_fails(name: str, args: dict) -> str:
+    raise RuntimeError("503 upstream timeout")
+
+
+@agentbrake.guard()
+def pages(name: str, args: dict) -> str:
+    if args.get("fail"):
+        raise RuntimeError("transient")
+    return f"page-{args['page']}"
+
+
+def _storm_blocks_fifth_call(arg_values) -> None:
+    with agentbrake.run(allowed_tools=["get_report"], budget_usd=agentbrake.UNLIMITED) as r:
+        for v in arg_values[:4]:
+            with pytest.raises(RuntimeError):
+                always_fails("get_report", {"page": v})
+        with pytest.raises(AgentBrakeInterrupt) as ei:
+            always_fails("get_report", {"page": arg_values[4]})
+        assert ei.value.reason is InterruptReason.LOOP
+        # The fifth attempt was intercepted before it ran.
+        assert len(r.state.calls) == 4
+
+
+def test_rising_page_all_errors_blocked_at_fifth_call():
+    _storm_blocks_fifth_call([1, 2, 3, 4, 5])
+
+
+def test_falling_arg_all_errors_blocked():
+    _storm_blocks_fifth_call([50, 40, 30, 20, 10])
+
+
+def test_page_as_string_all_errors_blocked():
+    # Not numeric, so no pagination signal at all; signal 2 needs successes.
+    _storm_blocks_fifth_call(["1", "2", "3", "4", "5"])
+
+
+def test_rising_page_all_successes_never_blocked():
+    with agentbrake.run(allowed_tools=["t"], budget_usd=agentbrake.UNLIMITED):
+        for page in range(1, 31):
+            assert pages("t", {"page": page}) == f"page-{page}"
+
+
+def test_rising_page_isolated_errors_among_successes_never_blocked():
+    failing = {7, 19}
+    with agentbrake.run(allowed_tools=["t"], budget_usd=agentbrake.UNLIMITED):
+        for page in range(1, 31):
+            if page in failing:
+                with pytest.raises(RuntimeError):
+                    pages("t", {"page": page, "fail": True})
+            else:
+                assert pages("t", {"page": page}) == f"page-{page}"
+
+
+def test_rising_page_outage_after_successes_is_eventually_blocked():
+    """Pages 1-5 work, then every call fails: blocked once errors catch up."""
+    with agentbrake.run(allowed_tools=["t"], budget_usd=agentbrake.UNLIMITED) as r:
+        for page in range(1, 6):
+            pages("t", {"page": page})
+        with pytest.raises(AgentBrakeInterrupt):
+            for page in range(6, 31):
+                with pytest.raises(RuntimeError):
+                    pages("t", {"page": page, "fail": True})
+        # 9 prior calls in the window: 4 ok vs 5 errors at the block.
+        assert len(r.state.calls) == 10
+
+
+def test_progress_unaware_unchanged_for_successful_pagination():
+    with agentbrake.run(
+        allowed_tools=["t"], budget_usd=agentbrake.UNLIMITED, retry_progress_aware=False
+    ) as r:
+        for page in range(1, 5):
+            pages("t", {"page": page})
+        with pytest.raises(AgentBrakeInterrupt) as ei:
+            pages("t", {"page": 5})
+        assert ei.value.reason is InterruptReason.LOOP
+        assert len(r.state.calls) == 4
+
+
+def test_progress_unaware_unchanged_for_failing_pagination():
+    detector = RetryStormDetector(progress_aware=False)
+    state = RunState()
+    for page in range(1, 5):
+        state.append(_call(args={"page": page}, outcome="error"))
+    assert detector.check(state, _call(args={"page": 5})) is InterruptReason.LOOP
+
+
+@pytest.mark.parametrize(
+    "outcomes, expected",
+    [
+        (["ok", "ok", "ok", "error"], None),             # one hiccup: 3 > 1
+        (["ok", "error", "ok", "error"], InterruptReason.LOOP),  # tie: not progress
+        (["error", "error", "error", "ok"], InterruptReason.LOOP),
+        (["pending"] * 4, None),                          # in flight: no evidence of failure
+        (["ok", "pending", "pending", "error"], InterruptReason.LOOP),  # 1 vs 1
+    ],
+)
+def test_pagination_exemption_threshold(outcomes, expected):
+    detector = RetryStormDetector()
+    state = RunState()
+    for page, outcome in enumerate(outcomes, start=1):
+        state.append(_call(args={"page": page}, outcome=outcome))
+    assert detector.check(state, _call(args={"page": 5})) is expected
+
+
 # --- cost_from_tokens -----------------------------------------------------
 
 def test_cost_known_model():

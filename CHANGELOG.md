@@ -6,6 +6,30 @@ All notable changes to AgentBrake are documented here. Format follows
 
 ## [Unreleased]
 
+## [0.3.5] - Unreleased
+
+Fixes a retry storm that the default configuration let run unchecked. No receipt format change,
+`verify_chain` unchanged, no API change.
+
+### Behaviour changes
+- **The pagination exemption of `RetryStormDetector` now needs successes.** With `progress_aware=True`
+  (the default), a same-tool burst whose numeric argument climbs or drops on every call is exempt only
+  while the finished calls in the window are not failure-dominated: no error, or strictly more
+  successes than errors. Before, the arguments alone decided. A run that retries a failing tool with
+  `page=1, 2, 3 ...` is now stopped with `InterruptReason.LOOP` at the fifth same-tool call (defaults:
+  5 calls in a window of 10). A real page walk with an isolated failure is still let through; calls
+  still pending are counted neither way. `progress_aware=False` is unchanged.
+
+### Fixed
+- **Retry storms disguised as pagination were never stopped.** `page=1, 2, 3 ...` against a tool that
+  always fails passed the progress check on every turn, so neither `LoopDetector` (new arguments,
+  new hash) nor `RetryStormDetector` (exempted as pagination) fired. Measured on Claude Haiku 4.5:
+  30 turns and about 563,000 input tokens per run with AgentBrake on, the same as without it. See
+  `docs/research/cost-measurement.md`.
+- **Docstrings of `LoopDetector` and `RetryStormDetector`** pointed varied-argument loops to
+  `RetryStormDetector` without mentioning the pagination exemption. They now state it, its success
+  condition, and that the window is a call count, not a time span.
+
 ## [0.3.4] - 2026-10-10
 
 Polish release from a field test on a real Claude agent. No receipt format change, `verify_chain`
@@ -274,7 +298,9 @@ Documentation and examples only — no change to package behavior.
   the guarded agent process cannot approve its own interruption.
 - Signed, hash-chained attestations for human approve/kill decisions.
 
-[Unreleased]: https://github.com/BOSSMETALIQUE/agentbrake/compare/v0.3.3...HEAD
+[Unreleased]: https://github.com/BOSSMETALIQUE/agentbrake/compare/v0.3.5...HEAD
+[0.3.5]: https://github.com/BOSSMETALIQUE/agentbrake/compare/v0.3.4...v0.3.5
+[0.3.4]: https://github.com/BOSSMETALIQUE/agentbrake/compare/v0.3.3...v0.3.4
 [0.3.3]: https://github.com/BOSSMETALIQUE/agentbrake/compare/v0.3.2...v0.3.3
 [0.3.2]: https://github.com/BOSSMETALIQUE/agentbrake/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/BOSSMETALIQUE/agentbrake/compare/v0.3.0...v0.3.1

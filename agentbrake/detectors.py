@@ -59,8 +59,12 @@ def _looks_like_progress(prior_same_tool: List[ToolCall], new_call: ToolCall) ->
 
     Two independent signals count as progress:
 
-    1. A numeric argument that climbs/drops monotonically (page=1,2,3...).
-       Works regardless of whether outcomes were recorded.
+    1. A numeric argument that climbs/drops monotonically (page=1,2,3...),
+       AND the finished calls are not failure-dominated: either none of them
+       errored, or successes strictly outnumber errors. A page walk that
+       hiccups once is still a page walk; page=1,2,3... against a tool that
+       keeps failing is a retry storm with a counter, not progress. Calls
+       still pending (in flight in parallel) are counted neither way.
 
     2. The calls are nearly all distinct AND the ones that finished actually
        succeeded. This catches cursor-based pagination / legitimate iteration
@@ -70,9 +74,12 @@ def _looks_like_progress(prior_same_tool: List[ToolCall], new_call: ToolCall) ->
     """
     series = prior_same_tool + [new_call]
 
-    # Signal 1: numeric pagination.
+    # Signal 1: numeric pagination, unless the finished calls mostly failed.
     if _has_monotonic_numeric_arg(series):
-        return True
+        errors = sum(1 for c in prior_same_tool if c.outcome == "error")
+        oks = sum(1 for c in prior_same_tool if c.outcome == "ok")
+        if errors == 0 or oks > errors:
+            return True
 
     # Signal 2: varied + actually succeeding.
     if len(prior_same_tool) >= 2:
@@ -100,7 +107,10 @@ class LoopDetector:
 
     This catches *exact* repetition: the agent calling the same tool with the
     same arguments over and over (e.g. search("news") -> search("news") -> ...).
-    For same-tool loops where only the arguments change, use RetryStormDetector.
+    Same-tool loops where only the arguments change are RetryStormDetector's
+    job, with one exemption: a numeric argument that climbs or drops on every
+    call (page=1, 2, 3 ...) reads as pagination and is let through unless most
+    of those calls failed. See RetryStormDetector.
 
     ``threshold`` is the number of identical consecutive calls that counts as
     a loop: the ``threshold``-th one is blocked before it runs, so
@@ -143,14 +153,22 @@ class RetryStormDetector:
     the allow-list remain your hard stops. Set `progress_aware=False` to fall
     back to pure count-based behavior.
 
+    The exemption looks at outcomes, not only at arguments. A monotonic numeric
+    argument is exempt only while the same-tool calls in the window that
+    finished are not failure-dominated (no error, or more successes than
+    errors). A climbing page number against a tool that keeps failing is
+    therefore still flagged. Before 0.3.5 the arguments alone decided, and such
+    a storm ran unchecked.
+
     Args:
         max_calls_per_tool: how many calls to the same tool are allowed inside
             the window before the brake trips. Must be >= 2.
-        window: how many recent calls to look back over. Must be
-            >= max_calls_per_tool. A larger window catches slower loops; a
-            smaller one only catches tight bursts.
+        window: how many recent calls to look back over (a call count, not a
+            time span). Must be >= max_calls_per_tool. A larger window catches
+            slower loops; a smaller one only catches tight bursts.
         progress_aware: when True (default), bursts that show monotonic numeric
-            progress, or that are varied and succeeding, are not flagged.
+            progress without mostly failing, or that are varied and succeeding,
+            are not flagged.
     """
 
     def __init__(
