@@ -62,7 +62,9 @@ listed under "Behaviour changes".
   (run_id=<id>)`. It used to embed the whole run state (args, history, receipt signature), flooding logs
   and the model's context when returned as a tool result. Detail is unchanged on `e.reason` /
   `e.context`, plus new read-only `e.tool`, `e.run_id`, `e.receipt`. The exception now also survives
-  pickling.
+  pickling. A budget block caused by a `0.0` budget (the default, e.g. `init()` without `budget_usd`)
+  says so on the same line: `...: budget_usd is 0.0 (the default); set budget_usd=<amount> or
+  budget_usd=agentbrake.UNLIMITED`. Budget interrupts carry `e.context["budget_usd"]`.
 - **The flat $0.01 per tool call is labeled an estimate.** `ToolCall.cost_estimated` marks it,
   `RunState.cost_is_estimate` reports it, interrupt contexts carry `cost_is_estimate` and new detector
   receipts `total_cost_is_estimate`; the validation page shows "Estimated cost" (contexts from older

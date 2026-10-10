@@ -184,7 +184,21 @@ class AgentBrakeInterrupt(Exception):
             parts.append(f"on tool {name!r}")
         if self.run_id:
             parts.append(f"(run_id={self.run_id})")
-        return " ".join(parts)
+        summary = " ".join(parts)
+        budget = self.context.get("budget_usd")
+        if (
+            self.reason is InterruptReason.BUDGET
+            and isinstance(budget, (int, float))
+            and not isinstance(budget, bool)
+            and budget == 0
+        ):
+            # A zero budget is almost always the unset default (init() with no
+            # budget_usd), which blocks the very first guarded call. Say so.
+            summary += (
+                ": budget_usd is 0.0 (the default); set budget_usd=<amount> "
+                "or budget_usd=agentbrake.UNLIMITED"
+            )
+        return summary
 
     def __reduce__(self):
         # Exception pickles as cls(*self.args), and args holds only the summary

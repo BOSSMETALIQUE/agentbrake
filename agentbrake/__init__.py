@@ -540,6 +540,9 @@ def guard() -> Callable[[Callable[..., Any]], Callable[..., Any]]:
                     continue
 
                 context = _build_context(active, call)
+                if reason is InterruptReason.BUDGET:
+                    # Lets str(e) explain a block by the 0.0 default budget.
+                    context["budget_usd"] = active.budget_detector.budget_usd
                 if reason is InterruptReason.FLOW and active.flow_detector is not None:
                     context["flow"] = active.flow_detector.explain(active.state, call)
                 if (

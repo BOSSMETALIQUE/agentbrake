@@ -93,3 +93,29 @@ def test_pickle_roundtrip_preserves_reason_and_context():
     assert clone.reason is InterruptReason.BUDGET
     assert clone.context == e.context
     assert str(clone) == str(e)
+
+
+def test_default_zero_budget_block_says_why_on_one_line():
+    agentbrake.init(allowed_tools=["t"])  # no budget_usd: the 0.0 default
+    with pytest.raises(AgentBrakeInterrupt) as ei:
+        dispatch("t", {})
+    e = ei.value
+    text = str(e)
+    assert e.reason is InterruptReason.BUDGET
+    assert "\n" not in text
+    assert text.startswith("AgentBrake interrupt: budget on tool 't'")
+    assert "budget_usd is 0.0 (the default)" in text
+    assert "set budget_usd=<amount> or budget_usd=agentbrake.UNLIMITED" in text
+    assert e.context["budget_usd"] == 0.0
+    # Survives pickling with the same message.
+    assert str(pickle.loads(pickle.dumps(e))) == text
+
+
+def test_exhausted_nonzero_budget_keeps_the_plain_line():
+    with agentbrake.run(allowed_tools=["t"], budget_usd=0.015):
+        dispatch("t", {})
+        with pytest.raises(AgentBrakeInterrupt) as ei:
+            dispatch("t", {"i": 2})
+    assert ei.value.reason is InterruptReason.BUDGET
+    assert ei.value.context["budget_usd"] == 0.015
+    assert "the default" not in str(ei.value)
