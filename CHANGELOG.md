@@ -6,6 +6,46 @@ All notable changes to AgentBrake are documented here. Format follows
 
 ## [Unreleased]
 
+## [0.3.4] - 2026-10-10
+
+Polish release from a field test on a real Claude agent. Backward compatible: no receipt format change,
+`verify_chain` unchanged, existing budgets trip at the same call.
+
+### Fixed
+- **Ephemeral signing key no longer goes unnoticed.** A run given `receipts_path` while neither
+  `AGENTBRAKE_SIGNING_KEY_FILE` nor `AGENTBRAKE_SIGNING_SEED` is set now emits
+  `signing.EphemeralSigningKeyWarning`, naming the file, the throwaway `key_id` and the exact
+  `agentbrake keygen` + env commands. Previously the receipts were written silently and could never be
+  verified (`export` showed "UNSIGNED", `verify` failed with "no public key known"). No key is created
+  on your behalf: an unencrypted private key appearing on disk unasked is a risk you should choose, and
+  swapping the signer mid-process would orphan what it already signed. New `attest.signer_is_ephemeral()`.
+  `verify` adds a hint when it hits an unknown key; `export` explains what an unsigned head means.
+- **Loop detector no longer stops a normal retry.** The `LoopDetector` threshold was hard-wired to 3, so
+  a tool that failed twice was interrupted as a "loop" on its next retry. It is now configurable via
+  `run()` / `init()` / `Run(loop_threshold=...)` and defaults to `DEFAULT_LOOP_THRESHOLD = 4`: a try
+  plus two retries run, the 4th identical consecutive call is blocked (still one call before the
+  same-tool retry-storm detector). `loop_threshold=3` restores the old behavior.
+- **`agentbrake verify` no longer claims guarantees on failure.** "What this verification PROVES" is
+  printed only when every check passes; a failing run lists each failed check and states that nothing is
+  proven. Same for `verify-receipt`.
+- **Raw ledger passed to `verify`.** `agentbrake verify receipts.jsonl` (also `verify-receipt`,
+  `report`) now says it is a raw ledger and names the command to run first (`agentbrake export
+  --receipts ...`), exit code 2, instead of a parse error or a misleading
+  "entries: 0 ... VERIFICATION FAILED".
+- **`str(AgentBrakeInterrupt)` is one line**: `AgentBrake interrupt: <reason> on tool '<tool>'
+  (run_id=<id>)`. It used to embed the whole run state (args, history, receipt signature), flooding logs
+  and the model's context when returned as a tool result. Detail is unchanged on `e.reason` /
+  `e.context`, plus new read-only `e.tool`, `e.run_id`, `e.receipt`. The exception now also survives
+  pickling.
+- **The flat $0.01 per tool call is labeled an estimate.** `ToolCall.cost_estimated` marks it,
+  `RunState.cost_is_estimate` reports it, interrupt contexts carry `cost_is_estimate` and new detector
+  receipts `total_cost_is_estimate`; the validation page shows "Estimated cost" (contexts from older
+  SDKs keep "Total cost"). Public constant `ESTIMATED_COST_PER_TOOL_CALL_USD`. Amounts and `budget_usd`
+  semantics are unchanged.
+
+### Added
+- `agentbrake --version`.
+
 ## [0.3.3] - 2026-10-09
 
 ### Added

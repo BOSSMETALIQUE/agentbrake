@@ -10,7 +10,7 @@ import agentbrake
 from agentbrake import cli, receipts, signing
 from agentbrake import export as export_mod
 from agentbrake.server import attest
-from agentbrake.types import RunState, ToolCall
+from agentbrake.types import RunState
 
 TEST_SIGNER = signing.Ed25519Signer.from_seed(b"\x0c" * 32)
 

@@ -34,7 +34,7 @@ from .detectors import (
 from .flow import FlowPolicy, FlowRuleDetector, block_exfiltration
 from .types import AgentBrakeInterrupt, InterruptReason, RunState, ToolCall
 
-__version__ = "0.3.3"
+__version__ = "0.3.4"
 
 __all__ = [
     "init",
