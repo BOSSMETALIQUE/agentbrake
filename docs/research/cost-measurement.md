@@ -132,12 +132,22 @@ Read these before quoting any figure above.
       --price-in 1.00 --price-out 5.00 --runs 2 --max-turns 30
   ```
 
-  > **TODO (numbers to add after the rerun on 0.3.5):** per arm, average
-  > turns, input tokens, cost, turn-cap hits and stop reasons. Also confirm
-  > that the model sent `page` as an integer. A string `page` never enters
-  > the pagination check: it is stopped by the plain count, on 0.3.4 too,
-  > so that run would not exercise the fix. Until those numbers are in, the
-  > fifth-call stop is shown by tests only, not by a live run.
+  Measured on 0.3.5: Haiku 4.5 (1.00 / 5.00), 2 runs, 30-turn cap. The
+  model sent `page` as an integer that rose on every call, so the run went
+  through the pagination check. A string `page` never enters that check:
+  it is stopped by the plain count, on 0.3.4 too, so it would not have
+  exercised the fix. Figures are per-run averages.
+
+  | Arm | Turns | Input tokens | Output tokens | Cost | Stop |
+  |---|---|---|---|---|---|
+  | unprotected | 30 | 563,598 | 2,458 | $0.5759 | turn cap hit 2/2 |
+  | AgentBrake 0.3.5 | 5.0 | 15,842 | 422 | $0.0180 | `loop` 2/2, pages 1 to 5 |
+
+  The protected arm stopped at the fifth call, as the tests predict, and
+  cost about 32× less than the unprotected arm. The limits in this list
+  apply to this measurement too: the scenario is built to loop, there were
+  only 2 runs, the 30-turn cap truncates the unprotected arm (its cost is a
+  lower bound), and no prompt caching was used.
 - **Behaviour depends on the instruction given to the agent.** Haiku 5.5 vs
   Haiku 4.5 already shows that two models handle the same instruction
   differently. A different prompt, tool description or error message could
