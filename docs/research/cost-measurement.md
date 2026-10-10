@@ -95,14 +95,15 @@ Read these before quoting any figure above.
   cost is set almost entirely by this value. A higher threshold costs more
   per stopped loop. A lower one stops sooner but risks interrupting
   legitimate retries. Other values were not measured.
-- **Varied arguments are not caught: measured, AgentBrake stopped nothing.**
+- **Varied arguments: up to 0.3.4, AgentBrake stopped nothing (measured).**
   The protected runs above were stopped by the loop detector, which fires
   only on consecutive identical calls (same tool, same arguments). A
-  separate measurement varied the arguments instead: `get_report` with a
-  `page` number that increases on every attempt, a tool that always fails,
-  Haiku 4.5, 2 runs, 30-turn cap. Both arms ran all 30 turns, with about
-  563,000 input tokens each, and AgentBrake recorded no stop reason. The
-  script for that variant is not published yet. Why neither detector fired:
+  separate measurement on 0.3.4 varied the arguments instead: `get_report`
+  with a `page` number that increases on every attempt, a tool that always
+  fails, Haiku 4.5, 2 runs, 30-turn cap. Both arms ran all 30 turns, with
+  about 563,000 input tokens each, and AgentBrake recorded no stop reason.
+  That measurement was made with an unpublished script. Why neither
+  detector fired on 0.3.4:
   - The loop detector compares a SHA-256 of tool name plus arguments
     (`agentbrake/detectors.py`, `_structural_hash`). A new `page` value
     gives a new hash, so the streak never starts.
@@ -117,9 +118,26 @@ Read these before quoting any figure above.
   - The budget, the only other stop that applies here, was disabled
     (`UNLIMITED`).
 
-  Until that changes, an agent that retries a failing tool with a strictly
-  rising or falling numeric argument is not stopped by AgentBrake's default
-  configuration.
+  **Fixed in 0.3.5.** The pagination exemption now requires that the
+  finished same-tool calls in the window are not failure-dominated: no
+  error, or strictly more successes than errors. With every call failing,
+  the exemption no longer applies and `RetryStormDetector` stops the run at
+  the fifth same-tool call. Unit and `guard()` tests pin this in
+  `tests/test_retry_storm.py`. The measurement can be rerun with
+  [`benchmarks/retry_cost_varied.py`](../../benchmarks/retry_cost_varied.py),
+  which also prints the stop reason and the page values the model sent:
+
+  ```bash
+  python benchmarks/retry_cost_varied.py --model claude-haiku-4-5 \
+      --price-in 1.00 --price-out 5.00 --runs 2 --max-turns 30
+  ```
+
+  > **TODO (numbers to add after the rerun on 0.3.5):** per arm, average
+  > turns, input tokens, cost, turn-cap hits and stop reasons. Also confirm
+  > that the model sent `page` as an integer. A string `page` never enters
+  > the pagination check: it is stopped by the plain count, on 0.3.4 too,
+  > so that run would not exercise the fix. Until those numbers are in, the
+  > fifth-call stop is shown by tests only, not by a live run.
 - **Behaviour depends on the instruction given to the agent.** Haiku 5.5 vs
   Haiku 4.5 already shows that two models handle the same instruction
   differently. A different prompt, tool description or error message could
