@@ -1,7 +1,38 @@
 # Design: `agentbrake mcp-proxy`
 
-*Design document, October 2026. Status: proposal, no production code yet.
-Branch `feat/mcp-proxy`, based on v0.3.5.*
+*Design document, October 2026. Status: proposal, revised after review, no
+production code yet. Branch `feat/mcp-proxy`, based on v0.3.5.*
+
+## Summary for decision-makers
+
+- **What**: a process between an MCP client (Claude Code, Cursor) and MCP
+  servers that applies AgentBrake's rules to every `tools/call`. No change to
+  agent code.
+- **Multi-server from the first release**: the main case, "read the web on
+  server A, email through server B", needs one process and one state for both.
+- **When**: 0.4.0 is the Claude Code hook (outside this repository for now).
+  The proxy ships in **0.5.0**, with a policy format shared with the hook.
+- **Posture**: fail-closed. Tools outside the policy are hidden and refused.
+  Taint is never cleared while the proxy runs. Crashed servers are restarted
+  with state kept.
+- **Keys**: created only by `agentbrake mcp-proxy init`, on an explicit action.
+- **Not covered**: clients that bypass the proxy, non-MCP actions, argument
+  and result content (§9).
+- **Open**: `isError` or JSON-RPC error for refusals, to measure on Claude Code.
+
+## Release sequencing
+
+- **0.4.0: the Claude Code hook.** It lives outside this repository for now.
+  Nothing in this document may conflict with it.
+- **0.5.0: the MCP proxy**, multi-server from its first public release (§4,
+  §11).
+- **Common policy format.** Hook and proxy will read the same policy format.
+  It is defined **after the hook is merged**. The JSON in §3 is a working
+  draft of the proxy's needs, not the final format.
+- **"v1" in this document** means the proxy's first public release, 0.5.0.
+- **No library refactor before the hook merges.** The extraction of a
+  pre/post decision API from `guard()` (plan step 4) waits for
+  the hook merge, to avoid conflicting changes to the same code.
 
 ## Goal
 
@@ -222,23 +253,98 @@ Two facts from the hoophq design matter here:
   must not depend on protocol sessions (§4).
 - **Removing denied tools from the list is established practice** (§6).
 
+## Protocol-era transparency
+
+A dual-era client decides which era a server speaks from the server's
+answers. On stdio it probes with `server/discover`:
+- a `DiscoverResult` means modern;
+- a *recognized modern error*, such as `UnsupportedProtocolVersionError`
+  (`-32022`), means modern, and the client retries with a supported version;
+- *any other error, or no answer within a timeout*, means legacy, and the
+  client falls back to `initialize`.
+
+The page "Versioning and compatibility" sets this out, with a compatibility
+matrix for every client/server era pair [S2]: "a recognized modern JSON-RPC
+error (such as `UnsupportedProtocolVersionError`) identifies a modern server
+... Anything else identifies a legacy server." The fallback must not be keyed
+to one error code, since legacy servers answer unknown pre-`initialize`
+requests in implementation-defined ways [S4]. The same page says clients
+**SHOULD** cache the era "for the lifetime of the server process (stdio)"
+[S2]. For a client, the server process *is* the proxy.
+
+An error the proxy writes itself would be read as the **server's** answer, and
+could push the client into the wrong era. Rules:
+
+- **Single-server shortcut: the proxy relays `initialize`,
+  `notifications/initialized` and `server/discover` without interpreting
+  them**, and never answers them itself. It does not rewrite versions,
+  capabilities or `supportedVersions`. The client negotiates with the real
+  server, through the proxy.
+- **The proxy generates its own protocol answers only for `tools/call`**
+  (refusals, §5), plus the transport-level cases where no server answer can
+  exist (a client line that is not JSON, §8). It never generates an error for
+  a version-negotiation message. In particular it never emits `-32022` or any
+  other code from the MCP-reserved range `-32020..-32099` [S1]: a dual-era
+  client would take that as a recognized modern error.
+- **Multi-server mode is the one exception, and it is stated as such.** There
+  the proxy *is* the server the client negotiates with (§4). It cannot relay
+  one backend's answer for all of them, so it answers `initialize` and
+  `server/discover` itself, as a dual-era server implementing the versions it
+  actually supports. The answers are built from what the backends really
+  negotiated, never invented. In that mode a `-32022` from the proxy is a true
+  statement about the proxy, which is what the compatibility matrix
+  expects from a modern server [S2]. Even then, the proxy never turns a
+  backend problem (a crash, an unsupported backend version) into a
+  negotiation error towards the client. A backend that cannot be negotiated
+  with is a startup failure (below).
+- **When the server crashes while a negotiation request is in flight**, the
+  proxy restarts the server and replays that request (§8). It does not answer
+  it with an error.
+- **A restarted server must speak the era it spoke before.** The client
+  cached the era for the proxy's lifetime [S2]. If the restarted child
+  negotiates a different era, which happens if the command now runs a
+  different server version, the proxy does not hide the change. It treats
+  that server as failed (crash-loop rules, §8) instead of serving the client
+  in an era it did not choose.
+- **Startup failures happen before any MCP traffic.** An invalid policy, a
+  missing key or a server command that cannot start makes the proxy exit
+  before it reads its first line. The client sees a transport failure (the
+  process ended), not a protocol error, so it cannot misread it as an era
+  signal.
+- **Those failures can be found before the proxy is plugged into a client.**
+  `agentbrake mcp-proxy init` (§2, §7) sets up the key and a policy.
+  `agentbrake mcp-proxy --check` validates the policy and the key, starts the
+  servers once, lets each one negotiate its era as a client would, lists their
+  tools against the policy, and shuts them down. A setup that passes `--check`
+  should not fail at the client's first connection.
+
 ## 2. Decision 1: form of the command
 
-**v1: stdio, one server per proxy, wrapping its command.**
+**First public release (0.5.0): stdio in front, one or more stdio servers
+behind, all in one process.** Multi-server comes first because the main
+case, reading the web on one server and sending email through another, needs
+both servers under one state (§4).
 
 ```text
-agentbrake mcp-proxy --policy FILE [--name NAME] [--receipts PATH] [--check] -- <server command> [args...]
+agentbrake mcp-proxy --policy FILE [--receipts PATH]
+agentbrake mcp-proxy --policy FILE [--name NAME] [--receipts PATH] -- <server command> [args...]
+agentbrake mcp-proxy --check --policy FILE [-- <server command> ...]
+agentbrake mcp-proxy init [--name NAME] [-- <server command> [args...]]
 ```
 
-- Everything after `--` is the server command. It is started as a child
-  process from an argument list (no shell), with the proxy's environment:
-  the client passes `env` to the proxy, and the proxy passes it on.
-- `--name` labels the server in receipts and refusal messages. It defaults
-  to the `name` field of the policy file.
-- `--check` validates the policy and the signing key, then exits with 0 or
-  1 without starting the server. It is meant for CI and for checking a
-  setup before editing a client config.
-- Claude Code example:
+- **Multi-server form.** The servers are declared in the policy file, each
+  with its command and its tools (§3). The client sees one MCP server whose
+  tools are prefixed `<server>__<tool>`, as the spec recommends for
+  aggregating proxies [S5]. One client entry replaces several:
+
+  ```bash
+  claude mcp add agentbrake -- agentbrake mcp-proxy \
+      --policy ~/.agentbrake/policies/workspace.json
+  ```
+
+- **Single-server shortcut.** Everything after `--` is one server command.
+  It is the same engine with one backend, so tool names are not prefixed and
+  an existing client entry only has to be wrapped:
 
   ```bash
   claude mcp add github -- agentbrake mcp-proxy \
@@ -246,7 +352,39 @@ agentbrake mcp-proxy --policy FILE [--name NAME] [--receipts PATH] [--check] -- 
       -- npx -y @modelcontextprotocol/server-github
   ```
 
-  The same `command` / `args` pair goes into `.mcp.json` or Cursor's
+  It is convenient, but it cannot see flows to other servers. The README
+  must say so next to the example.
+- **Server commands** are started as child processes from an argument list,
+  with no shell. They receive the proxy's environment; the client passes
+  `env` to the proxy. A server's `env` in the policy file may only reference
+  variables of that environment (`"${GITHUB_TOKEN}"`), never contain values.
+  Secrets therefore stay in the client configuration, not in a policy file
+  that may be committed.
+- **`--name`** labels the single server in receipts and refusal messages. In
+  multi-server mode, labels are the server keys of the policy file.
+- **`--check`** validates the policy and the key, then starts each server
+  once, lets it negotiate its era as a client would, compares its tools with
+  the policy (tools present but not classified, tools classified but
+  missing), and shuts everything down. It exits 0 or 1. It is meant for CI and
+  for testing a setup before a client uses it (see "Protocol-era
+  transparency").
+- **`init`** sets up a first working configuration, on an explicit user
+  action:
+  1. **Creates the signing key** at `~/.agentbrake/signing_key.pem` (path
+     built from `Path.home()`), with the same guarantees as `agentbrake
+     keygen`: never overwrites an existing key (reuses it and says so), file
+     mode `0600`, prints the `key_id`.
+  2. **Writes an example policy** to `~/.agentbrake/policies/<name>.json`,
+     never overwriting an existing file. If a server command is given, `init`
+     starts it once and writes every tool it exposes under `unclassified`
+     (§3): denied until a human classifies it, never allowed by default.
+  3. **Prints the `claude mcp add ...` line to copy**, with absolute paths,
+     quoted for the user's shell. It does not edit any client configuration:
+     changing what a client executes stays the user's decision.
+
+  The proxy itself never generates a key (§7). `init` is the only command
+  that creates one, and only because the user ran it.
+- The same `command` / `args` pair goes into `.mcp.json` or Cursor's
   `mcp.json`.
 
 Why stdio first:
@@ -257,7 +395,7 @@ Why stdio first:
 - The spec recommends stdio for local servers "to limit access to just the
   MCP client" [S10].
 
-**What HTTP would require later** (plan step 7):
+**What HTTP would require later** (plan step 11):
 
 - **HTTP at the back** (stdio in front, a remote HTTP server behind) is the
   easy half.
@@ -283,27 +421,44 @@ Why stdio first:
 
 ## 3. Decision 2: policy format
 
-A JSON file that maps one-to-one onto the existing API. v1 adds no new
-enforcement semantics.
+> **Draft.** Hook and proxy will share one policy format, defined after the
+> Claude Code hook is merged (see "Release sequencing"). What follows records
+> what the proxy needs from that format. It is not a commitment to these
+> exact key names.
+
+A JSON file that maps one-to-one onto the existing API. It adds no new
+enforcement semantics. Servers and their tools are declared together. Taint
+labels and deny rules are global, which is what lets a read on one server
+block a send on another.
 
 ```json
 {
   "version": 1,
   "name": "workspace",
   "default": "deny",
-  "tools": {
-    "fetch_url":  { "class": "untrusted_source" },
-    "read_inbox": { "class": "untrusted_source" },
-    "read_file":  { "class": "private_source" },
-    "list_files": { "class": "neutral" },
-    "send_email": {
-      "class": "egress",
-      "allow_args": {
-        "fields": ["to", "cc", "bcc"],
-        "values": ["me@example.com"],
-        "domains": ["corp.example"],
-        "other_fields": ["subject", "body"]
+  "servers": {
+    "web": {
+      "command": ["npx", "-y", "example-fetch-server"],
+      "tools": {
+        "fetch_url": { "class": "untrusted_source" }
       }
+    },
+    "mail": {
+      "command": ["npx", "-y", "example-mail-server"],
+      "env": { "MAIL_TOKEN": "${MAIL_TOKEN}" },
+      "tools": {
+        "read_inbox": { "class": "untrusted_source" },
+        "send_email": {
+          "class": "egress",
+          "allow_args": {
+            "fields": ["to", "cc", "bcc"],
+            "values": ["me@example.com"],
+            "domains": ["corp.example"],
+            "other_fields": ["subject", "body"]
+          }
+        }
+      },
+      "unclassified": ["delete_message"]
     }
   },
   "flows": { "deny": [["untrusted", "egress"]] },
@@ -313,11 +468,21 @@ enforcement semantics.
 }
 ```
 
+With the single-server shortcut (`-- <command>`), `servers` holds one entry
+and its `command` comes from the command line.
+
+`unclassified` lists tools a server exposes that nobody has classified yet;
+`init` fills it in. Such tools are **denied and hidden**, exactly like tools
+not listed at all. The list exists so that `--check` can tell "deliberately
+left out" from "new tool nobody has seen" (the second makes `--check` fail).
+
 **Mapping to the existing API**
 
 | Policy file | AgentBrake |
 |---|---|
-| keys of `tools` | `allowed_tools`, enforced by `EscalationDetector` |
+| keys of each server's `tools` | `allowed_tools`, enforced by `EscalationDetector`, under the names the client sees (`<server>__<tool>`, or `<tool>` with one server) |
+| `unclassified` | nothing: denied like any unlisted tool; used only by `--check` and `init` |
+| `servers.<name>.command`, `env` | proxy only: how to start each backend |
 | `"class": "untrusted_source"` | `FlowPolicy.source(tool, "untrusted")` |
 | `"class": "private_source"` | `FlowPolicy.source(tool, "private")` |
 | `"class": "egress"` | `FlowPolicy.sink(tool, "egress")` |
@@ -348,7 +513,7 @@ Rules:
   This is the allow-list semantics AgentBrake already has, and it also covers
   tools that appear later through `list_changed`.
 - The proxy never classifies a tool from server annotations, which are
-  untrusted [S5]. A later helper (`suggest-policy`, plan step 6) may *draft*
+  untrusted [S5]. A later helper (`suggest-policy`, plan step 10) may *draft*
   a file from `tools/list` and the annotations, for a human to review.
 - On load, the proxy runs `FlowPolicy.validate()`, which rejects deny rules
   that can never fire and `allow_args` on a tool that is not a sink. A policy
@@ -382,22 +547,33 @@ not v1.
 (loop and retry-storm detection) and the budget accumulate there. Nothing is
 written or reloaded per call.
 
-(The request refers to "the hook" and its per-call files. This repository
-contains no such hook today. The contrast holds for any integration that
-starts a fresh process per call, such as a client-side pre-tool-use hook:
-that process must reload its state from disk every time, and a proxy does
-not.)
+This is the difference from the Claude Code hook (0.4.0, outside this
+repository for now): a hook runs as a fresh process for each call and has to
+reload its state from disk every time. A proxy does not.
 
 **What a run is for a proxy.** In the library, a `run()` is one agent task,
 and taint is monotonic within it: `flow.py` says "use a fresh `run()` per
 task". A proxy cannot see task boundaries, and the modern spec states that a
-connection is not a conversation [S1]. **v1 therefore uses one run per proxy
-process.** This errs towards over-blocking, never under-blocking: once
-anything untrusted has been read, every `egress` call is blocked until the
-proxy restarts (in Claude Code, a reconnect of that server). There is
-deliberately no reset tool: a tool the model can call to clear taint is a
-tool an injected prompt can call too. An out-of-band reset is an open
-question.
+connection is not a conversation [S1]. **The proxy therefore uses one run per
+proxy process.**
+
+**Taint decision:**
+- **In the first release, taint is never cleared.** Restarting the proxy (in
+  Claude Code, reconnecting the server) is the only reset, and it clears all
+  state. This errs towards over-blocking, never under-blocking: once anything
+  untrusted has been read, every `egress` call stays blocked until then.
+- **Later, at most a reset approved out of band**: a human approves it
+  through a channel the model cannot reach, such as a local CLI command
+  answered on the terminal or the remote-mode approval page. The reset is
+  receipted.
+- **Never a reset through a tool, prompt or MCP method reachable by the
+  model.** A reset the model can trigger is a reset an injected prompt can
+  trigger.
+
+**Server crashes: the proxy restarts the server and keeps its state.** Taint,
+call history and budget live in the proxy, not in the server, so a restart of
+the child does not reset them. An injection that crashes a server
+therefore cannot clear taint. Details in §8.
 
 Protocol sessions are deliberately not used as the scope of a run. hoophq's
 proxy had to refuse 2026-07-28 because its enforcement was keyed to sessions
@@ -408,27 +584,48 @@ in two processes do not see each other's taint. Options:
 
 | Option | Verdict |
 |---|---|
-| A. Independent proxies, no shared state | **v1 behaviour, documented as a limitation (§9).** Flows are enforced within one server only. |
+| A. Independent proxies, no shared state | **Not enough for the first release.** The main case, web read then email through another server, would go through. Still possible with the single-server shortcut, and documented as such (§9). |
 | B. Proxies share state through a file or SQLite | **Rejected.** Check-then-act across processes needs a lock around every decision, and a crashed proxy can leave the lock held. `JsonlLedger` already states that cross-process appends are not coordinated. This brings back the per-call file I/O a proxy avoids, plus a race inside a security decision. |
 | C. A local daemon that every proxy queries | Workable but heavy: a second long-lived process, IPC, its own lifecycle, and authentication of local callers. Not before there is demand. |
-| D. **Aggregator mode**: one proxy launches several servers and exposes their tools under prefixed names | **Chosen for cross-server flows (plan step 5).** One process, one `RunState`, so `untrusted` from `web__fetch_url` blocks `mail__send_email` with the code that exists today. This is the shape the spec and existing gateways use for multiple servers [S5][S14][S15]. |
+| D. **Aggregator mode**: one proxy launches several servers and exposes their tools under prefixed names | **Chosen, and required for the first public release (0.5.0).** One process, one `RunState`, so `untrusted` from `web__fetch_url` blocks `mail__send_email` with the code that exists today. This is the shape the spec and existing gateways use for multiple servers [S5][S14][S15]. |
 
-Aggregator mode costs more than it looks:
+Aggregator mode costs more than it looks, and that cost is now part of the
+first release:
 
-- the proxy must answer `initialize` and `server/discover` itself, merging
-  capabilities;
-- it must remap JSON-RPC ids per backend in both directions, including legacy
-  server-to-client requests;
-- it must multiplex `subscriptions/listen` and `list_changed`;
-- tool names change (`<server>__<tool>`), which breaks client-side
-  permission rules that name tools.
+- **The proxy is the server the client talks to.** It answers `initialize`
+  (legacy clients) and `server/discover` (modern clients) itself, with
+  capabilities merged from the backends' real answers.
+- **The proxy is a client of each backend.** It probes each one at start
+  (`server/discover`, falling back to `initialize`) exactly as a dual-era
+  client should [S2][S4].
+- **It translates between eras.** The client's era and each backend's era are
+  independent. A modern client may reach a legacy backend, which means
+  per-request `_meta` towards one side and a handshake on the other. The same
+  goes for MRTR versus server-to-client requests: a legacy backend's
+  `elicitation/create` request becomes an `InputRequiredResult` for a modern
+  client. This is the largest single piece of work in the plan. If it proves
+  too large, the fallback is to require that every backend shares the client's
+  era, and refuse to start otherwise (detected by `--check`).
+- **It remaps JSON-RPC ids** per backend, in both directions.
+- **It multiplexes** `subscriptions/listen` and `list_changed` across
+  backends.
+- **Tool names change** to `<server>__<tool>`, which affects client-side
+  permission rules that name tools (open question).
 
-Hence one server per proxy first.
+The single-server shortcut is the same engine with one backend. It is kept
+for its simplicity, but it is not the case that justifies the release.
 
 ## 5. Decision 4: what the client receives when a call is blocked
 
-**A `tools/call` blocked by a detector gets a tool execution error: a normal
-result with `isError: true`, not a JSON-RPC error.**
+> **Not decided here.** Whether a refusal is returned as an `isError` result or
+> as a JSON-RPC error will be **measured on Claude Code with a prototype**
+> (plan step 1). The measurement covers what the model sees, whether it
+> retries, and whether the session continues. This section records the two
+> candidates and the arguments on each side. The `isError` form is shown first
+> because the spec's guidance leans that way, not because it was chosen.
+
+**Candidate A: a tool execution error, a normal result with
+`isError: true`.**
 
 ```json
 {
@@ -455,16 +652,36 @@ result with `isError: true`, not a JSON-RPC error.**
 `resultType` is included only when the request was modern (§1.1). The
 `_meta` key follows the reverse-DNS vendor-prefix rule [S1].
 
-Why `isError` rather than a JSON-RPC error:
+For candidate A:
 
 - Clients **SHOULD** pass tool execution errors to the model, and only
   **MAY** pass protocol errors [S5]. A model that never sees why it was
   stopped tends to retry or improvise. "Policy decision, do not retry, ask
   the user" tells it what to do.
-- A JSON-RPC error would need a code. `-32602` means invalid params or an
-  unknown tool, which is false for a valid but forbidden call. The range
-  `-32020..-32099` is off-limits [S1]. A private code outside the JSON-RPC
-  range would be legal, but no client gives it any meaning.
+
+Against candidate A:
+
+- A client may present `isError` as an ordinary tool failure, and the model
+  may retry or work around it. Repeated identical retries would then hit the
+  loop detector, but workarounds through other tools would not.
+
+**Candidate B: a JSON-RPC error.**
+
+For candidate B:
+
+- A protocol error may stop the client's current action more firmly. That
+  would be closer to the library, where raising an exception stops the run.
+
+Against candidate B:
+
+- It needs a code. `-32602` means invalid params or an unknown tool, which is
+  false for a valid but forbidden call. The range `-32020..-32099` is
+  off-limits [S1]. A private code outside the JSON-RPC range is legal, but no
+  client gives it any meaning.
+- Clients only **MAY** show protocol errors to the model, so the model may
+  never learn why the call failed.
+
+Whatever the measurement shows, the following holds for both candidates.
 
 Reasons map to messages as follows: `flow` (with the taint source),
 `escalation` (see below), `loop` (identical call repeated, or retry storm),
@@ -555,17 +772,19 @@ unverifiable receipts would be the 0.3.3 failure again.
       it exists**. The path is built from `Path.home()`, as in the 0.3.4
       warning, because `~` is not expanded by Windows cmd.
 2. **If nothing resolves, the proxy refuses to start.** It exits with code 2
-   and prints the one-time command:
-   `agentbrake keygen -o "<home>/.agentbrake/signing_key.pem"`. The client
-   then reports that the server failed to connect. That failure is loud, and
-   fixing it is a one-time step.
+   before reading any message, and prints the one-time command,
+   `agentbrake mcp-proxy init` (or `agentbrake keygen -o
+   "<home>/.agentbrake/signing_key.pem"`). The client then reports that the
+   server failed to connect. That failure is loud, and fixing it is a one-time
+   step. `init` and `--check` reveal it before any client is configured.
 3. **`--ephemeral-receipts`** opts into a throwaway key explicitly, for
    tests and demos. The proxy then writes a first line in the receipts file
    saying the key is ephemeral, so the file itself warns its reader.
 4. **The proxy never creates a key on its own.** This keeps the 0.3.4
    position: a private key appearing on disk unasked is a risk the user
-   should choose to take. `agentbrake keygen` already refuses to overwrite a
-   key and sets mode `0600`.
+   should choose to take. The key is created only by an explicit command:
+   `agentbrake mcp-proxy init` (§2) or `agentbrake keygen`. Both refuse to
+   overwrite an existing key and set mode `0600`.
 5. **Receipts path**: `--receipts`, defaulting to
    `~/.agentbrake/mcp-proxy/<name>-<UTC timestamp>-<pid>.jsonl`. There is one
    file per process: two Claude Code windows start two proxies for the same
@@ -584,13 +803,48 @@ because it looks protective while protecting nothing.
 |---|---|
 | Policy missing, invalid JSON, unknown key, `validate()` error | Refuse to start, exit 2, reason on stderr. `--check` reports the same. |
 | No persistent signing key | Refuse to start (§7). |
-| Exception in a detector or in the decision path | **Block** that call (`isError`, reason `internal`), traceback on stderr, keep serving. One bad call must neither take the server down nor go through. |
+| Policy valid but a server cannot be started or negotiated with at startup | Refuse to start, exit 2, before reading any message (see "Protocol-era transparency"). `--check` reports the same. |
+| Exception in a detector or in the decision path | **Block** that call with the refusal form of §5 (reason `internal`), traceback on stderr, keep serving. One bad call must neither take the server down nor go through. |
 | Line from the client that is not JSON, or not JSON-RPC | Not forwarded. Answer `-32700` (parse error) or `-32600` (invalid request), with `id: null` when the id cannot be read [S1]. |
-| Line from the server on stdout that is not a valid message | Not forwarded, since the client must only receive MCP messages [S4]. Logged on stderr. If it was meant as the reply to a pending request, that request gets `-32603`. |
-| Server exits | In-flight requests get `-32603` "upstream server exited". v1: the proxy then exits with a non-zero code, so the client sees the server go away (see open questions about restarting the child inside the proxy). |
+| Line from the server on stdout that is not a valid message | Not forwarded, since the client must only receive MCP messages [S4]. Logged on stderr. The server is treated as crashed (next row). |
+| Server crashes or exits | **The proxy restarts it and keeps its state** (taint, call history, budget, receipts chain). Details below. |
 | Client closes the proxy's stdin | Close the child's stdin, wait, then terminate it (SIGTERM, then SIGKILL; `TerminateProcess` on Windows) [S4]. |
 | Proxy itself crashes | The client loses the server. Nothing bypasses the proxy, because it is the only path to the child. |
 | Line exceeding the size limit | Treated as malformed (above). The limit is configurable, generous by default, and never unbounded. |
+
+**Restarting a crashed server.**
+
+- **Why restart instead of exiting.** The state lives in the proxy. If the
+  proxy exited with its server, the user's reconnect would start a fresh
+  proxy with no taint. An injection able to crash a server would then clear
+  taint. Restarting the child inside the proxy closes that path. It also
+  follows the spec: a client **SHOULD** restart a server that exits
+  unexpectedly [S4], and here the proxy is that client.
+- **Re-establishing the protocol state.** The new child gets the same
+  command and environment.
+  - With a modern server nothing needs replaying, since the protocol is
+    stateless [S1].
+  - With a legacy server, the proxy replays the cached `initialize` and
+    `notifications/initialized` before anything else.
+  - Active `subscriptions/listen` requests are re-sent, since a server keeps
+    no subscription state across restarts [S7]. The client is then sent
+    `list_changed`, because the restarted server's tools may differ.
+- **Requests in flight at the crash:**
+  - `initialize` and `server/discover` are **replayed** to the new child and
+    never answered with an error ("Protocol-era transparency").
+  - Read-only listings (`tools/list`, `prompts/list`, `resources/list`,
+    `ping`) are replayed.
+  - A `tools/call` is **not** replayed, since it may have had side effects.
+    It is answered in the refusal form of §5, saying that the server
+    restarted and that the outcome is unknown. Its `ToolCall` is recorded
+    with outcome `error`.
+  - Any other request gets JSON-RPC `-32603`.
+- **Bounded.** At most 3 restarts within 60 seconds per server (configurable).
+  Beyond that the proxy stops restarting. In multi-server mode, that
+  server's tools are refused from then on (refusal form) while the other
+  servers keep working. In single-server mode, the proxy exits with a
+  non-zero code. Each restart is logged on stderr. An exhausted server is
+  recorded in the receipts as an event.
 
 An `--audit-only` mode (log what *would* be blocked, block nothing) would
 help adoption, but it is fail-open by design. If it ever exists it must be
@@ -616,8 +870,9 @@ meant to go into the README word for word.
   inspect what a result contains. An injected sentence still reaches an
   allowed recipient.
 - **Flows across separately proxied servers** (§4). Reading on server A and
-  sending through server B is not blocked when A and B have separate
-  proxies, until aggregator mode exists.
+  sending through server B is blocked only when both are declared in the
+  **same** proxy. With two proxies (for example two single-server shortcuts),
+  or with one server left outside the proxy, that flow is not blocked.
 - **What a server does on its own.** A tool that sends data out as a side
   effect, under a name the policy classified as `neutral` or as a source, is
   not treated as egress. The protection is only as good as the
@@ -633,8 +888,9 @@ meant to go into the README word for word.
 - **The proxy does not stop the agent.** It refuses calls, and the client
   decides what happens next (§5).
 - **Taint never expires within a proxy's lifetime.** Legitimate egress can
-  stay blocked for the rest of a session (over-blocking). Restarting the
-  proxy clears all state, taint included.
+  stay blocked for the rest of a session (over-blocking). Restarting the proxy
+  clears all state, taint included. A crashed server does not, since the
+  proxy restarts it and keeps the state.
 - **The budget is an estimate** of tool calls, not of model spend (§3).
 
 ## 10. Decision 9: tests
@@ -662,13 +918,18 @@ would, asserting on exact lines and on the receipts file.
 | Case | Expected |
 |---|---|
 | Allowed call | `fetch_url` passes. The server's response line reaches the client byte for byte. |
-| Blocked call (flow) | `fetch_url` then `send_email(to=x@evil.com)`: an `isError` result. `send_email` never reaches the server. One `flow` receipt, which verifies. The refusal text does not contain `x@evil.com`. |
+| Blocked call (flow) | `fetch_url` then `send_email(to=x@evil.com)`: a refusal in the form chosen after the prototype (§5). `send_email` never reaches the server. One `flow` receipt, which verifies. The refusal text does not contain `x@evil.com`. |
 | `allow_args` exemption | Same sequence with `to=me@example.com`: passes, `flow_allow` receipt. |
 | Loop and retry storm | 4 identical calls: the 4th is blocked. `failing` with `page=1..5`: the 5th is blocked, which exercises the 0.3.5 rule with outcomes taken from `isError`. |
 | `tools/list` filtered | `secret_tool` absent; order preserved; `nextCursor` kept on every page; `cacheScope` set to `"private"` (modern). |
 | Hidden tool called | `secret_tool` gets `-32602` "Unknown tool"; `escalation` receipt; the server never sees the call. |
 | `list_changed` | The tool added by the server stays hidden after the notification. |
-| Server crashes | The pending request gets `-32603`; the proxy exits non-zero; the test enforces a timeout so a hang fails it. |
+| Cross-server flow (main case) | Two fake servers in one proxy: `web__fetch_url` then `mail__send_email(to=x@evil.com)` is refused, and the mail server never sees the call. |
+| Server crashes | `crash` during a `tools/call`: that call gets the refusal form with "outcome unknown"; the server is restarted; **taint read before the crash still blocks a later `send_email`**; a later allowed call succeeds. A test timeout makes any hang fail. |
+| Crash loop | A server that crashes on every start: after 3 restarts its tools are refused; in multi-server mode the other server keeps working; in single-server mode the proxy exits non-zero. |
+| Crash during negotiation | The server crashes while `initialize` / `server/discover` is in flight: the request is replayed to the restarted server, and the client never receives an error for it. |
+| Era transparency (single server) | `initialize` and `server/discover` are relayed byte for byte; no proxy-generated error ever answers them. A dual-era test client that probes through the proxy picks the same era as when talking to the server directly. |
+| Mixed eras (multi-server) | A modern client with one legacy backend and one modern backend: both backends' tools work; a legacy backend's `elicitation/create` reaches the modern client as an `InputRequiredResult`, or, if translation is not implemented, `--check` refuses the setup. |
 | Malformed message from the client | `-32700` with `id: null`; nothing written to the server. |
 | Malformed message from the server | Line dropped, stderr logged, pending request gets `-32603`. |
 | Large message | A 10 MB result passes. `asyncio.StreamReader` limits lines to 64 KiB by default, so the proxy must raise that limit (bounded and configurable). |
@@ -679,66 +940,108 @@ would, asserting on exact lines and on the receipts file.
 | Legacy server→client request | `sampling/createMessage` from the server reaches the client, and the client's reply reaches the server. |
 | Cancellation | `notifications/cancelled` is relayed; for a call the proxy already refused, nothing more is sent. |
 | Fail-closed internals | A detector that raises (injected in the test) blocks the call, and the proxy keeps serving. |
-| Startup refusals | No key: exit 2, keygen command on stderr. Invalid policy: exit 2. `--check` returns 0 or 1. |
+| Startup refusals | No key: exit 2 before reading stdin, `init` command on stderr. Invalid policy: exit 2. Server command that does not start: exit 2. `--check` reports each case and returns 0 or 1; a tool exposed but not classified makes it return 1. |
+| `init` | Creates the key only if absent (never overwrites, mode `0600` on POSIX); writes the example policy only if absent; puts discovered tools under `unclassified`; prints a `claude mcp add` line whose paths are absolute and quoted. Run twice, it changes nothing the second time. |
 | Windows | Pipes in binary mode: in text mode Windows would turn `\n` into `\r\n`. The suite runs on Windows in CI. |
 | Interop (Python 3.10+ job) | The official `mcp` SDK client against the official SDK server, through the proxy, in both eras. |
 
 ## 11. Decision 10: implementation plan
 
-Each step ships on its own with its tests, and none breaks the existing API.
+The order follows "Release sequencing": 0.4.0 is the Claude Code hook, and the
+proxy ships in 0.5.0, multi-server from the start. Each step ships with its
+tests.
 
-0. **Expose a pre/post decision API in the library.** Today the detector
-   pipeline lives inside `guard()`'s wrapper, around a synchronous function
-   call. A proxy forwards a request and receives the answer later, with other
-   calls possibly in flight.
+**Phase A: before the hook is merged.** These steps change nothing in the
+`agentbrake/` package, so they cannot conflict with the hook.
+
+1. **Prototype for the refusal form (throwaway, never released).**
+   - What it is: a minimal stdio relay with one hard-coded rule ("refuse
+     `send_email` after `fetch_url`"), kept outside the package, for example
+     under `experiments/`.
+   - What it measures, on Claude Code, for both candidates of §5 (`isError`
+     result, JSON-RPC error):
+     - what the model sees;
+     - whether it retries the same call, or tries another tool;
+     - whether the session continues.
+   - It also checks era transparency against a real client: Claude Code
+     connects through the relay as it does directly.
+   - The results are written into this document, and §5 is decided then.
+2. **Fake MCP server for the tests** (`tests/` only): both eras, the tools of
+   §10, crash and malformed-output modes. Also usable by the prototype.
+
+**Phase B: after the hook is merged, towards 0.5.0.**
+
+3. **Common policy format.** Define the format shared by hook and proxy,
+   starting from what the hook ships and from §3 here. Update §3 to match.
+4. **Pre/post decision API in the library** (the former "step 0", moved
+   here so it does not conflict with the hook).
+   - Today the detector pipeline lives inside `guard()`'s wrapper, around a
+     synchronous call. A proxy forwards a request and gets the answer later,
+     with other calls possibly in flight.
    - Extract `Run.precheck(call) -> Decision` (detectors, receipts, append
      under a lock) and `Run.record_outcome(call, outcome)`, and rebuild
      `guard()` on top of them. **No behaviour change**: the existing suite
      must pass untouched.
-   - Outcome mapping for the proxy: `ok` is a result without `isError`;
-     `error` is `isError: true` or a JSON-RPC error. This matters since
-     0.3.5, because the retry-storm pagination exemption depends on
-     outcomes.
-1. **Policy loader and `--check`.** JSON maps to `allowed_tools`,
-   `FlowPolicy` and the `Run` arguments. Strict validation, and key
-   resolution (§7). No MCP code yet.
-2. **Transparent stdio relay, no policy.** Child process, binary pipes, line
-   framing with a raised and bounded size limit, stderr pass-through,
-   shutdown, and exit propagation. Fake server, framing and lifecycle tests,
-   on Linux and Windows.
-3. **Enforcement.** `tools/call` decisions, refusals (§5), `tools/list`
-   filtering (§6), receipts (§7), fail-closed paths (§8), and the limits of
-   §9 written in the README. First usable release: **0.4.0**.
-4. **Era coverage.** Modern and legacy conformance against the fake server
-   (`initialize`, `server/discover`, MRTR, `subscriptions/listen`, legacy
-   server-to-client requests), plus the interop job with the official SDK.
-5. **Aggregator mode.** `--config FILE` listing several servers, prefixed
-   tool names, id remapping, merged discovery. This gives cross-server flow
-   control (§4).
-6. **Helpers.**
-   - `suggest-policy`: draft a policy from `tools/list` and the
-     annotations, for review.
-   - An optional "every `resources/read` taints as X".
-   - An out-of-band taint reset, if the open question is settled in its
-     favour.
-7. **HTTP.** Back-end HTTP first: stdio in front, a remote server behind.
-   Front-end HTTP only as an optional extra, with an authorization design
-   that does not pass tokens through [S10].
+   - Outcome mapping: `ok` is a result without `isError`; `error` is
+     `isError: true`, a JSON-RPC error, or a call lost in a server crash.
+     Since 0.3.5 the retry-storm pagination exemption depends on outcomes.
+5. **CLI setup commands.** Policy loader (strict validation, `unclassified`),
+   key resolution (§7), `agentbrake mcp-proxy init`, and `--check`.
+6. **Relay engine, multi-backend from the start.** The single-server shortcut
+   is the same engine with one backend.
+   - Child processes with binary pipes; line framing with a raised and
+     bounded size limit; stderr pass-through; shutdown.
+   - Probing and negotiation with each backend.
+   - Merged `initialize` / `server/discover` in multi-server mode, pure relay
+     in single-server mode.
+   - Id remapping and prefixed tool names.
+   - Multiplexed subscriptions.
+   - Crash restart with state kept (§8).
+   - Tests on Linux and Windows.
+7. **Enforcement.** `tools/call` decisions with the refusal form chosen in
+   step 1; `tools/list` filtering (§6); receipts (§7); fail-closed paths (§8);
+   the cross-server test of §10.
+8. **Era coverage.**
+   - Modern and legacy conformance, and the interop job with the official SDK.
+   - Mixed eras across backends: either translate between eras, or ship
+     0.5.0 with "every backend must share the client's era", enforced at
+     startup and by `--check`, and translate later.
+9. **Release 0.5.0**, with the limits of §9 written in the README and the
+   setup documented as `init`, then `--check`, then `claude mcp add`.
+
+**Phase C: after 0.5.0.**
+
+10. **Helpers.**
+    - `suggest-policy`: draft classifications from `tools/list` and
+      annotations, for review.
+    - An optional "every `resources/read` taints as X".
+    - A taint reset with out-of-band human approval, receipted, and never
+      reachable by the model (§4).
+11. **HTTP.**
+    - Back-end HTTP first: stdio in front, a remote server behind.
+    - Front-end HTTP only as an optional extra, with an authorization design
+      that does not pass tokens through [S10].
 
 ## Open questions
 
-- **One run per proxy process.** Without visible task boundaries it is the
-  only safe default, but taint will block legitimate egress for the rest of a
-  long session. Is an out-of-band reset (a signal, or a local CLI command
-  talking to the proxy) worth its attack surface? It must be out of the
-  model's reach.
-- **Restarting a crashed server inside the proxy.** It would keep state, and
-  so taint, across a child restart. Today a crash followed by a manual
-  reconnect gives a fresh proxy. A prompt injection that can crash the server
-  therefore resets taint, as long as the user reconnects. Restarting the
-  child is simple in the modern era, which is stateless, but in the legacy
-  era it requires replaying the cached `initialize`. v1 exits, for
-  simplicity.
+Decided at review, recorded in the body:
+- multi-server in the first public release (§4);
+- 0.5.0 after the hook's 0.4.0 ("Release sequencing");
+- `init` creates the key on an explicit action (§2, §7);
+- taint is never cleared within a proxy's life, and a crashed server is
+  restarted with state kept (§4, §8).
+
+Still open:
+
+- **Refusal form** (§5): `isError` result or JSON-RPC error. To be measured on
+  Claude Code with the prototype (plan step 1), not decided here.
+- **Era translation in multi-server mode** (§4): translate between a modern
+  client and a legacy backend, or require one era for 0.5.0. This depends on
+  the effort measured in step 8.
+- **Out-of-band taint reset** (plan step 10): through which channel. Remote-mode
+  approval page or local terminal prompt? It is never reachable by the model.
+- **The common policy format with the hook** (plan step 3): §3 is a draft
+  until then.
 - **MRTR retries.** A `tools/call` retried with `inputResponses` /
   `requestState` is checked again, since its arguments may differ. v1 also
   counts it as a new call for loop detection. That is conservative, but a
@@ -751,26 +1054,19 @@ Each step ships on its own with its tests, and none breaks the existing API.
 - **One label per source tool.** Tools that are both untrusted and private
   are common (mail, chat, tickets). Accepting several labels per tool is also
   a `FlowPolicy` change.
-- **Refusal as `isError`.** It is the option that informs the model. Some
-  clients may still present it as an ordinary failure, and the model may
-  retry; the loop detector would then catch repeated identical retries. To
-  be measured on Claude Code and Cursor during step 3.
-- **Refusing to start without a key.** The first run fails until `keygen` is
-  run. The alternative is to generate the key on first start and print where
-  it is. It is friendlier but contradicts the 0.3.4 position on keys created
-  unasked.
 - **The `_meta` vendor prefix** `io.github.bossmetalique.agentbrake/`
   follows the reverse-DNS rule [S1] but is tied to a GitHub account. A
   project domain would last longer.
 - **Tool names in aggregator mode.** Prefixing changes the names that clients
-  and permission rules refer to.
+  and permission rules refer to. Since multi-server is now the main mode, this
+  affects every user, not only an advanced option.
 
 ## Sources
 
 Specification (Model Context Protocol, revision 2026-07-28 unless noted):
 
 - [S1] Base protocol overview (messages, error codes, `_meta`, statelessness): https://modelcontextprotocol.io/specification/2026-07-28/basic/index
-- [S2] Versioning and compatibility (modern / legacy / dual-era, compatibility matrix), served at: https://modelcontextprotocol.io/specification/latest/basic/lifecycle
+- [S2] Versioning and compatibility (modern / legacy / dual-era, compatibility matrix): https://modelcontextprotocol.io/specification/2026-07-28/basic/versioning
 - [S3] Lifecycle, revision 2025-11-25 (`initialize`, version and capability negotiation): https://modelcontextprotocol.io/specification/2025-11-25/basic/lifecycle
 - [S4] stdio transport: https://modelcontextprotocol.io/specification/2026-07-28/basic/transports/stdio
 - [S5] Tools (list, call, annotations, name collisions, error handling): https://modelcontextprotocol.io/specification/latest/server/tools
