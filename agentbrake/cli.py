@@ -6,8 +6,9 @@ confirms — using only the public key — that every receipt is authentic and t
 chain is intact. It never talks to a server and holds no private material, so
 its verdict does not depend on trusting the operator.
 
-Output is deliberately ASCII-only (Windows consoles included) and ends with an
-explicit statement of what the verification does and does not prove. Exit code
+Output is deliberately ASCII-only (Windows consoles included). A passing run
+ends with an explicit statement of what the verification does and does not
+prove; a failing one lists what failed and claims no guarantee at all. Exit code
 0 means verified, 1 means verification failed, 2 means usage error.
 """
 
@@ -156,6 +157,19 @@ def _trust_model_lines(report: dict) -> list:
     return lines
 
 
+def _failure_lines(report: dict) -> list:
+    """What failed — and an explicit refusal to claim any guarantee."""
+    failed = [chk for chk in report["checks"] if not chk["ok"]]
+    lines = [f"What FAILED ({len(failed)} check(s)):"]
+    lines += [f"  x {chk['name']}: {chk['detail']}" for chk in failed]
+    lines += [
+        "Because verification failed, NOTHING is proven about these receipts:",
+        "  not their authenticity, not their integrity, not their completeness.",
+        "  Do not rely on any record in this file until every check passes.",
+    ]
+    return lines
+
+
 def _ascii(text: str) -> str:
     """Console-safe output: Windows terminals often choke on cp1252 gaps."""
     return text.replace("—", "--").replace("…", "...")
@@ -223,10 +237,11 @@ def _print_report(report: dict, path: str, *, as_json: bool) -> int:
         verdict = "PASS" if chk["ok"] else "FAIL"
         print(f"  [{verdict}] {chk['name']}: {_ascii(chk['detail'])}")
     print()
-    for line in _trust_model_lines(report):
-        print(line)
+    lines = _trust_model_lines(report) if report["ok"] else _failure_lines(report)
+    for line in lines:
+        print(_ascii(line))
     print()
-    verdict = "VERIFIED" if report["ok"] else "VERIFICATION FAILED"
+    verdict ="VERIFIED" if report["ok"] else "VERIFICATION FAILED"
     print(f"Verdict: {verdict}")
     return 0 if report["ok"] else 1
 
