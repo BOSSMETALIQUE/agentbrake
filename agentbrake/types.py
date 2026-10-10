@@ -2,12 +2,55 @@
 
 from __future__ import annotations
 
+import math
+import numbers
 from datetime import datetime, timezone
+from decimal import Decimal
 from enum import Enum
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
 from pydantic import BaseModel, Field
+
+
+def check_usd(value: Any, field: str) -> Any:
+    """Return ``value`` if it is a usable USD amount, else raise.
+
+    Accepts any real number (int, float, Fraction, numpy scalars) and Decimal.
+    Rejects bool (``True`` is an int, but never a price), NaN and infinities
+    (a NaN budget or cost compares False to everything, so a budget check
+    would silently never fire) and negative amounts (a negative cost would
+    credit the budget back).
+    """
+    if isinstance(value, bool) or not isinstance(value, (numbers.Real, Decimal)):
+        raise TypeError(
+            f"{field} must be a number of US dollars (int, float or Decimal), "
+            f"got {type(value).__name__}: {value!r}"
+        )
+    finite = value.is_finite() if isinstance(value, Decimal) else math.isfinite(value)
+    if not finite:
+        raise ValueError(f"{field} must be a finite amount, got {value!r}")
+    if value < 0:
+        raise ValueError(f"{field} must be >= 0, got {value!r}")
+    return value
+
+
+def usd_to_micro(value: Any, field: str = "cost_usd") -> int:
+    """Convert a USD amount to integer micro-dollars, validating it first."""
+    return int(round(check_usd(value, field) * 1_000_000))
+
+
+def _pop_usd_alias(data: Dict[str, Any], alias: str, micro_field: str) -> None:
+    """Move the USD convenience kwarg (``cost_usd``) onto its micro field.
+
+    Pydantic ignores unknown kwargs, so before 0.3.4 an alias this did not
+    convert (e.g. an int) was silently dropped and the amount became 0.
+    """
+    if alias not in data:
+        return
+    if micro_field in data:
+        raise ValueError(f"pass either {alias} or {micro_field}, not both")
+    data[micro_field] = usd_to_micro(data.pop(alias), alias)
 
 
 class InterruptReason(str, Enum):
@@ -36,7 +79,7 @@ class ToolCall(BaseModel):
     name: str
     args: Dict[str, Any] = Field(default_factory=dict)
     timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-    cost_usd_micro: int = 0  # cost in micro-dollars (1,000,000 µ$ = 1 USD)
+    cost_usd_micro: int = Field(default=0, ge=0)  # micro-dollars (1,000,000 µ$ = 1 USD)
     # True when cost_usd is AgentBrake's flat per-call placeholder (guard()),
     # not a price derived from the call itself (e.g. token usage).
     cost_estimated: bool = False
@@ -44,10 +87,8 @@ class ToolCall(BaseModel):
     error: Optional[str] = None  # repr of the exception when outcome == "error"
 
     def __init__(self, **data):
-        # Backward compatibility: accept cost_usd (float) and convert to micro-dollars
-        if 'cost_usd' in data and 'cost_usd_micro' not in data:
-            if isinstance(data['cost_usd'], float):
-                data['cost_usd_micro'] = int(round(data.pop('cost_usd') * 1_000_000))
+        # Convenience: accept cost_usd (int, float or Decimal) as micro-dollars.
+        _pop_usd_alias(data, "cost_usd", "cost_usd_micro")
         super().__init__(**data)
 
     @property
@@ -57,22 +98,20 @@ class ToolCall(BaseModel):
 
     @cost_usd.setter
     def cost_usd(self, value: float) -> None:
-        """Convenience setter: USD float to micro-dollars."""
-        self.cost_usd_micro = int(round(value * 1_000_000))
+        """Convenience setter: USD amount to micro-dollars."""
+        self.cost_usd_micro = usd_to_micro(value, "cost_usd")
 
 
 class RunState(BaseModel):
     run_id: str = Field(default_factory=lambda: str(uuid4()))
-    total_cost_usd_micro: int = 0  # cumulative cost in micro-dollars
+    total_cost_usd_micro: int = Field(default=0, ge=0)  # cumulative, micro-dollars
     calls: List[ToolCall] = Field(default_factory=list)
     status: str = "running"
     taints: List[TaintMark] = Field(default_factory=list)
 
     def __init__(self, **data):
-        # Backward compatibility: accept total_cost_usd (float) and convert to micro-dollars
-        if 'total_cost_usd' in data and 'total_cost_usd_micro' not in data:
-            if isinstance(data['total_cost_usd'], float):
-                data['total_cost_usd_micro'] = int(round(data.pop('total_cost_usd') * 1_000_000))
+        # Convenience: accept total_cost_usd (int, float or Decimal) as micro-dollars.
+        _pop_usd_alias(data, "total_cost_usd", "total_cost_usd_micro")
         super().__init__(**data)
 
     @property
@@ -82,8 +121,8 @@ class RunState(BaseModel):
 
     @total_cost_usd.setter
     def total_cost_usd(self, value: float) -> None:
-        """Convenience setter: USD float to micro-dollars."""
-        self.total_cost_usd_micro = int(round(value * 1_000_000))
+        """Convenience setter: USD amount to micro-dollars."""
+        self.total_cost_usd_micro = usd_to_micro(value, "total_cost_usd")
 
     @property
     def cost_is_estimate(self) -> bool:

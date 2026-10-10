@@ -5,7 +5,7 @@ import hashlib
 import json
 from typing import Any, Dict, Iterable, List, Optional
 
-from .types import InterruptReason, RunState, ToolCall
+from .types import InterruptReason, RunState, ToolCall, check_usd
 
 
 def _structural_hash(call: ToolCall) -> str:
@@ -185,7 +185,9 @@ class BudgetDetector:
     """Flags when projected total cost would exceed the configured budget."""
 
     def __init__(self, budget_usd: float):
-        self.budget_usd = budget_usd
+        # A NaN budget would compare False forever and never trip; a bool or
+        # a string is a caller bug. Fail at configuration, not at spend time.
+        self.budget_usd = float(check_usd(budget_usd, "budget_usd"))
 
     def check(self, run_state: RunState, new_call: ToolCall) -> Optional[InterruptReason]:
         projected = run_state.total_cost_usd + new_call.cost_usd

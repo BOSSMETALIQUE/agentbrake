@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -83,12 +84,20 @@ def create_interrupt(payload: CreateInterruptIn, request: Request) -> CreateInte
 
 
 def _format_cost(value: float) -> str:
-    """Display cost in a human-readable form."""
-    try:
-        v = float(value)
-    except (TypeError, ValueError):
+    """Display cost in a human-readable form.
+
+    The context is client-supplied JSON: a bool, NaN, infinity or negative
+    figure is shown as invalid rather than coerced ($1.00 for ``true``,
+    "$nan", or $0.00 for a credit).
+    """
+    if value is None:
         return "$0.00"
-    if v <= 0:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return "invalid"
+    v = float(value)
+    if not math.isfinite(v) or v < 0:
+        return "invalid"
+    if v == 0:
         return "$0.00"
     if v < 0.01:
         return "< $0.01"

@@ -12,6 +12,16 @@ Polish release from a field test on a real Claude agent. Backward compatible: no
 `verify_chain` unchanged, existing budgets trip at the same call.
 
 ### Fixed
+- **Budget bypass with integer costs.** `ToolCall(cost_usd=1)` and `RunState(total_cost_usd=2)` silently
+  became `0.0`: the convenience kwargs were converted only when they were a `float`, and any other type
+  was dropped, so a provider wrapper reporting whole dollars never moved the budget. `cost_usd` /
+  `total_cost_usd` (constructor kwargs and property setters) now accept `int`, `float`, `Decimal` and
+  other real numbers. `bool`, non-numbers, NaN, ±inf and negative amounts raise `TypeError` /
+  `ValueError` naming the field, as do negative `*_micro` values and passing both `cost_usd` and
+  `cost_usd_micro`. `BudgetDetector` (so `run()` / `init()`) validates `budget_usd` the same way: a NaN
+  budget never tripped. The validation page shows "invalid" for a bool / NaN / inf / negative /
+  non-numeric `total_cost_usd` instead of "$1.00", "$nan" or "$0.00". New helpers
+  `types.check_usd()` / `types.usd_to_micro()`. Only inputs that were already wrong now raise.
 - **Ephemeral signing key no longer goes unnoticed.** A run given `receipts_path` while neither
   `AGENTBRAKE_SIGNING_KEY_FILE` nor `AGENTBRAKE_SIGNING_SEED` is set now emits
   `signing.EphemeralSigningKeyWarning`, naming the file, the throwaway `key_id` and the exact
