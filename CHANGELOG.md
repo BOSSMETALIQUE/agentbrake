@@ -8,8 +8,22 @@ All notable changes to AgentBrake are documented here. Format follows
 
 ## [0.3.4] - 2026-10-10
 
-Polish release from a field test on a real Claude agent. Backward compatible: no receipt format change,
-`verify_chain` unchanged, existing budgets trip at the same call.
+Polish release from a field test on a real Claude agent. No receipt format change, `verify_chain`
+unchanged, existing budgets trip at the same call. Backward compatible except for the input validation
+listed under "Behaviour changes".
+
+### Behaviour changes
+- **Invalid USD amounts raise instead of being coerced.** `budget_usd` (`init()`, `run()`, `Run`,
+  `BudgetDetector`) and `cost_usd` / `total_cost_usd` (`ToolCall`, `RunState`) reject `bool`,
+  non-numbers, NaN and negative amounts with `TypeError` / `ValueError`. Before, a cost of any type
+  other than `float` silently became `0.0`, and a NaN budget never tripped.
+- **An infinite budget is rejected.** `budget_usd=float("inf")` (or `math.inf`, `Decimal("Infinity")`)
+  raises `ValueError: budget_usd must be a finite amount, got inf. For no spending limit, pass
+  budget_usd=agentbrake.UNLIMITED`. Use `agentbrake.UNLIMITED` for an unlimited run.
+- **The validation page no longer parses numeric strings as costs.** A `total_cost_usd` sent as a
+  string (e.g. `"1.5"`), a bool, NaN, inf or a negative number is displayed as "invalid" instead of
+  being converted ("$1.50", "$1.00" for `true`, "$nan", "$0.00"). The SDK always sends a number;
+  this only affects hand-crafted POSTs to `/interrupts`. A missing or `null` cost still shows "$0.00".
 
 ### Fixed
 - **Budget bypass with integer costs.** `ToolCall(cost_usd=1)` and `RunState(total_cost_usd=2)` silently
@@ -21,7 +35,7 @@ Polish release from a field test on a real Claude agent. Backward compatible: no
   `cost_usd_micro`. `BudgetDetector` (so `run()` / `init()`) validates `budget_usd` the same way: a NaN
   budget never tripped. The validation page shows "invalid" for a bool / NaN / inf / negative /
   non-numeric `total_cost_usd` instead of "$1.00", "$nan" or "$0.00". New helpers
-  `types.check_usd()` / `types.usd_to_micro()`. Only inputs that were already wrong now raise.
+  `types.check_usd()` / `types.usd_to_micro()`. See "Behaviour changes" for what now raises.
 - **Ephemeral signing key no longer goes unnoticed.** A run given `receipts_path` while neither
   `AGENTBRAKE_SIGNING_KEY_FILE` nor `AGENTBRAKE_SIGNING_SEED` is set now emits
   `signing.EphemeralSigningKeyWarning`, naming the file, the throwaway `key_id` and the exact
