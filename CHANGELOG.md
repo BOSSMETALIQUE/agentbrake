@@ -25,7 +25,9 @@ Polish release from a field test on a real Claude agent. Backward compatible: no
 - **Ephemeral signing key no longer goes unnoticed.** A run given `receipts_path` while neither
   `AGENTBRAKE_SIGNING_KEY_FILE` nor `AGENTBRAKE_SIGNING_SEED` is set now emits
   `signing.EphemeralSigningKeyWarning`, naming the file, the throwaway `key_id` and the exact
-  `agentbrake keygen` + env commands. Previously the receipts were written silently and could never be
+  `agentbrake keygen` + env commands. The suggested key path is built from the real home directory
+  (`Path.home()`) and quoted, e.g. `agentbrake keygen -o "C:\Users\me\.agentbrake\signing_key.pem"`,
+  since `~` is not expanded by Windows cmd (or inside an environment variable). Previously the receipts were written silently and could never be
   verified (`export` showed "UNSIGNED", `verify` failed with "no public key known"). No key is created
   on your behalf: an unencrypted private key appearing on disk unasked is a risk you should choose, and
   swapping the signer mid-process would orphan what it already signed. New `attest.signer_is_ephemeral()`.

@@ -7,6 +7,7 @@ import os
 import sys
 import warnings
 from contextvars import ContextVar, Token
+from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 from . import delegation, receipts, signing
@@ -241,12 +242,15 @@ def _warn_if_ephemeral_signer(receipts_path: str) -> None:
 
     if not attest.signer_is_ephemeral():
         return
+    # A literal path from the real home directory: '~' is not expanded by
+    # Windows cmd, nor once the path is stored in an environment variable.
+    key_path = Path.home() / ".agentbrake" / "signing_key.pem"
     warnings.warn(
         f"AgentBrake: receipts are written to {receipts_path} but signed with an "
         f"EPHEMERAL key (key_id {attest.SIGNER.key_id}) generated for this process. "
         "Once it exits they cannot be verified ('agentbrake verify' will report "
         "'no public key known'). Create a persistent key once with "
-        "'agentbrake keygen -o ~/.agentbrake/signing_key.pem' and set "
+        f'agentbrake keygen -o "{key_path}" and set '
         f"{signing.SIGNING_KEY_FILE_ENV} to that path (or set "
         f"{signing.SIGNING_SEED_ENV}) before starting the agent.",
         signing.EphemeralSigningKeyWarning,

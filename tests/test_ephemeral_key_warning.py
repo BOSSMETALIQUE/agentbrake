@@ -49,6 +49,19 @@ def test_receipts_path_with_ephemeral_key_warns(ephemeral, tmp_path):
     assert signing.SIGNING_KEY_FILE_ENV in message
 
 
+def test_warning_names_a_literal_home_path(ephemeral, tmp_path, monkeypatch):
+    # '~' is not expanded by Windows cmd: the suggested command must carry
+    # the real home directory, quoted in case it contains spaces.
+    home = tmp_path / "Jane Doe"
+    monkeypatch.setattr(agentbrake.Path, "home", classmethod(lambda cls: home))
+    with pytest.warns(EphemeralSigningKeyWarning) as record:
+        agentbrake.run(allowed_tools=["t"], receipts_path=str(tmp_path / "r.jsonl"))
+    message = str(record[0].message)
+    expected = home / ".agentbrake" / "signing_key.pem"
+    assert f'agentbrake keygen -o "{expected}"' in message
+    assert "~" not in message
+
+
 def test_init_with_receipts_path_warns_too(ephemeral, tmp_path):
     with pytest.warns(EphemeralSigningKeyWarning):
         agentbrake.init(allowed_tools=["t"], receipts_path=str(tmp_path / "r.jsonl"))
