@@ -71,6 +71,12 @@ listed under "Behaviour changes".
   SDKs keep "Total cost"). Public constant `ESTIMATED_COST_PER_TOOL_CALL_USD`. Amounts and `budget_usd`
   semantics are unchanged.
 
+- **README no longer overclaims.** Receipts are no longer said to cover "every enforcement decision"
+  (a remote-mode timeout mints none; a retry storm is recorded as `loop`), offline third-party
+  verification is stated to require a persistent signing key, and the tagline, "stable" status, asyncio
+  isolation (untested), CometAPI model count and OWASP ASI02 coverage are reworded to what is tested or
+  sourced. The opening incidents are labeled illustrative.
+
 ### Added
 - `agentbrake --version`.
 - **`agentbrake.UNLIMITED`**: pass `budget_usd=agentbrake.UNLIMITED` for no spending limit. There was

@@ -1,6 +1,6 @@
 # AgentBrake
 
-**A circuit breaker for LLM agents in production. Stop infinite loops, runaway costs, and privilege escalations in 3 lines of code.**
+**A circuit breaker for LLM agents in production. Stop infinite loops, runaway costs, and calls to tools outside your allow-list with one `init()` call (allow-list + budget) and one decorator on your tool dispatch.**
 
 <p>
   <img alt="Python 3.9+" src="https://img.shields.io/badge/python-3.9%2B-blue">
@@ -8,13 +8,13 @@
   <a href="https://github.com/BOSSMETALIQUE/agentbrake/actions"><img alt="Tests" src="https://github.com/BOSSMETALIQUE/agentbrake/actions/workflows/tests.yml/badge.svg"></a>
 </p>
 
-> 🇪🇺 **EU AI Act: high-risk obligations deferred, not dropped.** The Digital Omnibus (Regulation (EU) 2026/1744, in force 27 July 2026) moved the Annex III standalone high-risk deadline to **2 December 2027**, and Annex I AI embedded in regulated products to **2 August 2028**. Article 50 transparency duties were not deferred. That is lead time to build an evidence trail, not a reason to skip one. AgentBrake produces cryptographic proof of every enforcement decision, verifiable offline by a third party with only the public key. See [Security coverage](#security-coverage---owasp-top-10-for-agentic-applications-2026).
+> 🇪🇺 **EU AI Act: high-risk obligations deferred, not dropped.** The Digital Omnibus (Regulation (EU) 2026/1744, in force 27 July 2026) moved the Annex III standalone high-risk deadline to **2 December 2027**, and Annex I AI embedded in regulated products to **2 August 2028**. Article 50 transparency duties were not deferred. That is lead time to build an evidence trail, not a reason to skip one. AgentBrake signs a receipt for its enforcement decisions (one exception: a remote-mode decision timeout) that a third party can verify offline with only the public key, provided the signing key is persistent (`AGENTBRAKE_SIGNING_KEY_FILE`). See [Security coverage](#security-coverage---owasp-top-10-for-agentic-applications-2026).
 
-> **Status:** v0.3.4, on PyPI (`pip install py-agentbrake`). Local mode is stable (423 tests passing, 3 skipped). Every enforcement decision (human approvals, autonomous blocks, delegation violations) produces a **signed, hash-chained receipt** that a third party verifies offline with the standalone `agentbrake verify` CLI (see [Verifiable receipts](#verifiable-receipts)). A **flow-control engine with taint tracking** stops prompt-injection → exfiltration (see [Flow control](#flow-control-taint-tracking)), and **signed delegation tokens** carry the original user intent across agent hops (see [Delegation](#delegation-inter-agent-trust)). Looking for early users to validate the API.
+> **Status:** v0.3.4, on PyPI (`pip install py-agentbrake`). 423 tests passing, 3 skipped; CI runs them on Ubuntu with Python 3.9 to 3.12. Human approvals, autonomous blocks (loop, retry storm, budget, escalation, flow) and delegation violations each produce a **signed, hash-chained receipt**. Exceptions: a remote-mode decision timeout stops the run without minting a receipt, and a retry-storm block is recorded with kind `loop`, indistinguishable from an exact loop. Offline verification by a third party with the standalone `agentbrake verify` CLI requires a persistent signing key (`AGENTBRAKE_SIGNING_KEY_FILE`, or `AGENTBRAKE_SIGNING_SEED`); without one, receipts are signed with a throwaway key and verify only inside the process that signed them (see [Verifiable receipts](#verifiable-receipts)). A **flow-control engine with taint tracking** stops prompt-injection → exfiltration (see [Flow control](#flow-control-taint-tracking)), and **signed delegation tokens** carry the original user intent across agent hops (see [Delegation](#delegation-inter-agent-trust)). Looking for early users to validate the API.
 
 ## The problem
 
-You ship an agent on Friday. Saturday morning you wake up to a $200 OpenAI bill because it spent the night calling `search("latest news")` in a loop after a tool returned a malformed response. Or your support bot, given a `tools` array a little too permissive, calls `delete_database` because a user prompt-injected it. Or it just retries the same failing call 50 times before giving up.
+*Illustrative scenarios, not reported incidents:* you ship an agent on Friday. Saturday morning you wake up to a $200 OpenAI bill because it spent the night calling `search("latest news")` in a loop after a tool returned a malformed response. Or your support bot, given a `tools` array a little too permissive, calls `delete_database` because a user prompt-injected it. Or it just retries the same failing call 50 times before giving up.
 
 Observability tells you this happened. **AgentBrake stops it from happening.**
 
@@ -39,7 +39,7 @@ def call_tool(name: str, args: dict):
 
 That's it. If your agent loops, blows the budget, or tries to call something outside the allowlist, `call_tool` raises `AgentBrakeInterrupt` instead of executing.
 
-For long-lived processes that launch many agent tasks, give each task its own isolated run: fresh budget, fresh call history, nothing leaks from one run to the next (runs in separate threads or asyncio tasks are isolated too):
+For long-lived processes that launch many agent tasks, give each task its own isolated run: fresh budget, fresh call history, nothing leaks from one run to the next (runs in separate threads are isolated too, which the test suite covers; the active run is a `ContextVar`, which should isolate asyncio tasks as well, but that case is not covered by the tests):
 
 ```python
 with agentbrake.run(budget_usd=5.0) as r:
@@ -86,7 +86,7 @@ Since v0.3.1, blocks by every detector above mint a signed receipt (see [Receipt
 
 ## Real LLM cost tracking (CometAPI)
 
-Out of the box, guarded tool calls are charged a flat $0.01 *estimate* (not a price) and `cost_from_tokens(model, input_tokens, output_tokens)` is exported for pricing calls by hand. The [CometAPI](https://www.cometapi.com) provider makes the real thing automatic: CometAPI is an OpenAI-compatible gateway to 500+ models behind one endpoint, its responses carry token usage, and the provider feeds the resulting spend straight into the active run's `BudgetDetector`.
+Out of the box, guarded tool calls are charged a flat $0.01 *estimate* (not a price) and `cost_from_tokens(model, input_tokens, output_tokens)` is exported for pricing calls by hand. The [CometAPI](https://www.cometapi.com) provider makes the real thing automatic: CometAPI is an OpenAI-compatible gateway to models from several providers behind one endpoint, its responses carry token usage, and the provider feeds the resulting spend straight into the active run's `BudgetDetector`.
 
 ```bash
 pip install py-agentbrake[cometapi]     # pulls the openai client
@@ -263,7 +263,7 @@ The SDK is the only piece you import. In local mode (default), it raises on dete
 - [x] Compliance report: auditor-readable Markdown generated from a verified bundle (`agentbrake report`)
 - [x] Signed delegation tokens: user intent carried across agent hops, monotonic scope narrowing, ASI03
 - [x] PyPI release
-- [x] CometAPI provider: real token-based LLM cost tracking (500+ models, one endpoint)
+- [x] CometAPI provider: real token-based LLM cost tracking (OpenAI-compatible gateway, one endpoint)
 - [x] Receipts for loop, budget and escalation blocks, and a policy digest in flow receipts
 - [ ] Wire the `KeyStore` interface into the signing path, add the policy digest to every receipt type, give retry-storm its own receipt kind
 - [x] Human approvals bound to the exact action shown to the approver
@@ -332,7 +332,7 @@ AgentBrake closes this with a privilege split:
 
 ## Verifiable receipts
 
-Stopping an agent is enforcement. *Proving* what was decided, on what information, at what time, is accountability. Every decision produces a **signed, tamper-evident attestation**: a receipt a third party can verify **without trusting your server**. This covers a human approve/kill in remote mode, a human override of a flow block, an autonomous block by the loop, budget, escalation or flow detector, and a delegation violation: same format, same signing key, same verifier.
+Stopping an agent is enforcement. *Proving* what was decided, on what information, at what time, is accountability. These decisions produce a **signed, tamper-evident attestation**: a human approve/kill in remote mode, a human override of a flow block, an autonomous block by the loop, retry-storm, budget, escalation or flow detector, and a delegation violation: same format, same signing key, same verifier. Exceptions: a remote-mode decision timeout stops the run without minting a receipt, and a retry-storm block is recorded with kind `loop`, indistinguishable from an exact loop. A third party can verify a receipt **without trusting your server**, which requires a persistent signing key (`AGENTBRAKE_SIGNING_KEY_FILE`, or `AGENTBRAKE_SIGNING_SEED`); without one, receipts are signed with a throwaway key and verify only inside the process that signed them (see [Receipts for autonomous blocks](#receipts-for-autonomous-blocks)).
 
 When a human decides, the server mints an attestation and appends it to a hash-chained log:
 
@@ -574,12 +574,12 @@ We don't compete with these, we complement them. Run AgentBrake as your last lin
 
 ## Security coverage - OWASP Top 10 for Agentic Applications (2026)
 
-AgentBrake maps to the [OWASP Top 10 for Agentic Applications (2026)](https://genai.owasp.org/resource/owasp-top-10-for-agentic-applications-for-2026/), the risk taxonomy security teams now use to evaluate agent deployments. Every enforcement decision AgentBrake makes produces an **Ed25519-signed, hash-chained receipt** that a third party (an auditor, a client's security team) can verify **offline with only the public key**, with no trust in the AgentBrake server required.
+AgentBrake maps to the [OWASP Top 10 for Agentic Applications (2026)](https://genai.owasp.org/resource/owasp-top-10-for-agentic-applications-for-2026/), the risk taxonomy security teams now use to evaluate agent deployments. AgentBrake's enforcement decisions produce an **Ed25519-signed, hash-chained receipt** (exceptions: a remote-mode decision timeout mints none, and a retry-storm block is recorded as `loop`). With a persistent signing key (`AGENTBRAKE_SIGNING_KEY_FILE`), a third party (an auditor, a client's security team) can verify them **offline with only the public key**, with no trust in the AgentBrake server required; without one, they verify only inside the signing process.
 
 | OWASP | Risk | AgentBrake |
 |-------|------|------------|
 | **ASI01** | Agent Goal Hijack | [Flow-control engine](#flow-control-taint-tracking) with taint tracking blocks the indirect-injection → exfiltration path before the egress call executes. |
-| **ASI02** | Tool Misuse & Exploitation | Tool allow-list plus loop and retry-storm detection stop recursive tool abuse and unsafe call compositions. |
+| **ASI02** | Tool Misuse & Exploitation | The tool allow-list blocks calls to tools you did not list; loop and retry-storm detection stop repeated calls to the same tool; [flow rules](#flow-control-taint-tracking) block the source → sink sequences you declared. Call sequences you did not declare are not detected. |
 | **ASI03** | Identity & Privilege Abuse | [Signed delegation tokens](#delegation-inter-agent-trust) bind the original user intent, a narrowing tool subset, and a TTL to every A→B→C hop. Authority cannot be laundered across an internal call. |
 | **ASI08** | Cascading Agent Failures | Circuit-breaker halt-and-escalate: budget and loop limits are hard stops that break the chain before one failure snowballs across steps. |
 | **ASI10** | Rogue Agents | [Verifiable audit trail](#verifiable-receipts) gives post-incident forensics a tamper-evident record of tool calls, autonomous blocks, and human approvals. |
