@@ -20,6 +20,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, Optional, Tuple
 
+import agentbrake
 from agentbrake import export as export_mod
 from agentbrake import signing
 
@@ -326,7 +327,10 @@ def build_parser() -> argparse.ArgumentParser:
         prog=PROG,
         description="AgentBrake receipts: generate keys, export chains, verify bundles.",
     )
-    sub = parser.add_subparsers(dest="command", required=True)
+    parser.add_argument(
+        "--version", action="version", version=f"{PROG} {agentbrake.__version__}"
+    )
+    sub =parser.add_subparsers(dest="command", required=True)
 
     keygen = sub.add_parser("keygen", help="generate an Ed25519 signing keypair")
     keygen.add_argument(
