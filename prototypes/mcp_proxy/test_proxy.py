@@ -8,6 +8,9 @@ fake server alone), speaks raw newline-delimited JSON-RPC to it, and checks:
 - an allowed call is relayed, byte for byte both ways;
 - send_email to an unknown address after a read is blocked, in both refusal
   modes, and never reaches the server;
+- the refusal text is instructive by default and neutral with --refusal-text
+  neutral (same motif, no do-not-retry/ask-the-user wording), in both
+  refusal modes;
 - tools/list comes back unchanged;
 - a malformed message is not relayed;
 - initialize and server/discover are relayed without modification;
@@ -77,7 +80,7 @@ class Session:
     """A raw stdio client around a child process (proxy or fake server)."""
 
     def __init__(self, name, *, through_proxy=True, era="dual", refusal_mode="iserror",
-                 env=None):
+                 refusal_text="instructive", env=None):
         self.dir = WORK / name
         self.dir.mkdir(parents=True, exist_ok=True)
         self.trace = self.dir / "server_trace.bin"
@@ -85,7 +88,7 @@ class Session:
                   "--trace", str(self.trace)]
         if through_proxy:
             cmd = [sys.executable, str(PROXY), "--refusal-mode", refusal_mode,
-                   "--out-dir", str(self.dir), "--", *server]
+                   "--refusal-text", refusal_text, "--out-dir", str(self.dir), "--", *server]
         else:
             cmd = server
         if env is None:
@@ -220,6 +223,41 @@ def test_exfiltration_blocked_jsonrpc_legacy():
 
 def test_exfiltration_blocked_jsonrpc_modern():
     _exfiltration_after_read("jsonrpc", modern=True)
+
+
+def _refusal_text(mode, style):
+    s = Session(f"text-{style}-{mode}", refusal_mode=mode, refusal_text=style)
+    s.ask(discover())
+    s.ask(call(2, "fetch_url", {"url": "https://acme.example/"}, True))
+    s.ask(call(3, "read_secret", {}, True))
+    blocked = json.loads(s.ask(call(4, "send_email", {"to": ATTACKER, "subject": "sync",
+                                                       "body": "FAKE"}, True)))
+    s.assert_silent()
+    assert s.close() == 0
+    if mode == "iserror":
+        return blocked["result"]["content"][0]["text"]
+    return blocked["error"]["message"]
+
+
+def test_refusal_text_instructive():
+    for mode in ("iserror", "jsonrpc"):
+        text = _refusal_text(mode, "instructive")
+        assert text.startswith("AgentBrake blocked this call to send_email: ")
+        assert text.endswith(" This is a policy decision, not a transient error: "
+                              "do not retry; ask the user.")
+        assert ATTACKER not in text and "FAKE" not in text
+
+
+def test_refusal_text_neutral():
+    suffix = " This is a policy decision, not a transient error: do not retry; ask the user."
+    for mode in ("iserror", "jsonrpc"):
+        neutral = _refusal_text(mode, "neutral")
+        assert neutral.startswith("AgentBrake blocked this call to send_email: ")
+        assert "do not retry" not in neutral and "ask the user" not in neutral
+        assert "policy decision" not in neutral and "transient error" not in neutral
+        assert ATTACKER not in neutral and "FAKE" not in neutral
+        instructive = _refusal_text(mode, "instructive")
+        assert instructive == neutral + suffix, "neutral is not the same motif as instructive"
 
 
 def test_tools_list_unchanged():

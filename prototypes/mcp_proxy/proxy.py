@@ -151,7 +151,7 @@ class Waiter:
         self.event.set()
 
 
-def refusal_text(reason: str, tool: str, context: dict) -> str:
+def refusal_text(reason: str, tool: str, context: dict, text_style: str = "instructive") -> str:
     # Never echoes argument values: the model chose them, and the receipt
     # already binds them by digest.
     if reason == "flow":
@@ -171,13 +171,15 @@ def refusal_text(reason: str, tool: str, context: dict) -> str:
         what = "internal error in the policy check (blocked, fail closed)"
     else:
         what = reason
-    return (f"AgentBrake blocked this call to {tool[:64]}: {what}. This is a policy "
-            "decision, not a transient error: do not retry; ask the user.")
+    base = f"AgentBrake blocked this call to {tool[:64]}: {what}."
+    if text_style == "neutral":
+        return base
+    return base + " This is a policy decision, not a transient error: do not retry; ask the user."
 
 
 def build_refusal(mode: str, req_id: Any, modern: bool, reason: str, tool: str,
-                  context: dict) -> dict:
-    text = refusal_text(reason, tool, context)
+                  context: dict, text_style: str = "instructive") -> dict:
+    text = refusal_text(reason, tool, context, text_style)
     receipt = context.get("receipt") or {}
     decision = {"reason": reason, "tool": tool[:64],
                 "receipt": {"seq": receipt.get("seq"), "entry_hash": receipt.get("entry_hash")}
@@ -215,12 +217,14 @@ def is_jsonrpc_message(msg: Any) -> bool:
 
 
 class Proxy:
-    def __init__(self, server_cmd, run, refusal_mode: str, max_line: int, out_dir: Path):
+    def __init__(self, server_cmd, run, refusal_mode: str, refusal_text_style: str,
+                max_line: int, out_dir: Path):
         import agentbrake
 
         self.interrupt_type = agentbrake.AgentBrakeInterrupt
         self.run_obj = run
         self.refusal_mode = refusal_mode
+        self.refusal_text_style = refusal_text_style
         self.max_line = max_line
         self.decisions_path = out_dir / "decisions.jsonl"
         self.client_out = LockedWriter(sys.stdout.buffer)
@@ -352,14 +356,16 @@ class Proxy:
         except self.interrupt_type as e:
             reason = e.reason.value
             self.client_out.write(encode(build_refusal(
-                self.refusal_mode, req_id, modern, reason, name, e.context)))
+                self.refusal_mode, req_id, modern, reason, name, e.context,
+                self.refusal_text_style)))
             self.record(req_id, name, args, "blocked", reason)
             log(f"blocked {name}: {reason}")
         except Exception:
             # Fail closed: a bug in the decision path blocks the call.
             traceback.print_exc(file=sys.stderr)
             self.client_out.write(encode(build_refusal(
-                self.refusal_mode, req_id, modern, "internal", name, {})))
+                self.refusal_mode, req_id, modern, "internal", name, {},
+                self.refusal_text_style)))
             self.record(req_id, name, args, "blocked", "internal")
 
     # ----- client -> server --------------------------------------------------
@@ -457,6 +463,9 @@ def parse_args(argv=None):
         usage="%(prog)s [options] -- <server command...>")
     p.add_argument("--refusal-mode", choices=["iserror", "jsonrpc"], default="iserror",
                    help="form of a refusal: isError result (A) or JSON-RPC error (B)")
+    p.add_argument("--refusal-text", choices=["instructive", "neutral"], default="instructive",
+                   help="wording of a refusal: instructive (current behaviour, with "
+                        "do-not-retry / ask-the-user guidance) or neutral (statement only)")
     p.add_argument("--allow-recipient", action="append", default=None,
                    help=f"address send_email may reach after a read (repeatable; "
                         f"default {DEFAULT_ALLOWED_RECIPIENTS[0]})")
@@ -498,8 +507,9 @@ def main(argv=None) -> None:
         receipts_path=str(args.out_dir / "receipts.jsonl"),
     )
     log(f"key_id {attest.SIGNER.key_id}, refusal mode {args.refusal_mode}, "
-        f"server {args.server!r}")
-    Proxy(args.server, run, args.refusal_mode, args.max_line_bytes, args.out_dir).run()
+        f"refusal text {args.refusal_text}, server {args.server!r}")
+    Proxy(args.server, run, args.refusal_mode, args.refusal_text, args.max_line_bytes,
+          args.out_dir).run()
 
 
 if __name__ == "__main__":
