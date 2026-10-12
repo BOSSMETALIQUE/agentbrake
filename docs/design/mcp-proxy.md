@@ -631,12 +631,13 @@ for its simplicity, but it is not the case that justifies the release.
 > v2.1.296, 2026-10-11/12. 12 runs reached a block: 6 in `isError` mode
 > without insistence (3 with the instructive refusal text, 3 with the
 > neutral text — same results either way), 3 in JSON-RPC mode without
-> insistence, and 3 in JSON-RPC mode with an insistent follow-up from the
-> user. Across all 12: no retry, no workaround attempted, the model informed
+> insistence, and 3 in JSON-RPC mode with an insistent instruction in the
+> prompt. Across all 12: no retry, no workaround attempted, the model informed
 > the user every time, and the session continued every time. **`isError`
-> mode was not run with an insistent follow-up.** The refusal text stays
-> instructive by default; `--refusal-text neutral` is kept as a documented
-> option, since the runs that used it gave the same results. All 12 runs are
+> mode was not run with an insistent instruction in the prompt.** The
+> refusal text stays instructive by default; `--refusal-text neutral` is
+> kept as a documented option, since the runs that used it gave the same
+> results. All 12 runs are
 > one model on one scenario (a legitimate request the policy blocks); Opus
 > 5.5 was tried for 2 runs but was cut off by its own filter before reaching
 > the block, so it contributes no data point either way. Full detail,
@@ -1049,15 +1050,15 @@ Decided at review, recorded in the body:
 - `init` creates the key on an explicit action (§2, §7);
 - taint is never cleared within a proxy's life, and a crashed server is
   restarted with state kept (§4, §8);
-- **refusal form** (§5): `isError` result, measured on Claude Code with the
-  Phase A prototype.
+- **refusal form** (§5): `isError` result, decided on the spec's guidance;
+  the Phase A measurement on Claude Code did not separate the two forms.
 
 Still open:
 
 - **Behaviour with other models, especially smaller ones, and with
   `isError` under user insistence** (§5): the Phase A measurement covers one
   model (Sonnet 5) and never ran `isError` mode against an insistent
-  follow-up.
+  instruction in the prompt.
 - **Era translation in multi-server mode** (§4): translate between a modern
   client and a legacy backend, or require one era for 0.5.0. This depends on
   the effort measured in step 8.
