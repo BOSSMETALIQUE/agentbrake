@@ -18,7 +18,8 @@ production code yet. Branch `feat/mcp-proxy`, based on v0.3.5.*
 - **Keys**: created only by `agentbrake mcp-proxy init`, on an explicit action.
 - **Not covered**: clients that bypass the proxy, non-MCP actions, argument
   and result content (§9).
-- **Open**: `isError` or JSON-RPC error for refusals, to measure on Claude Code.
+- **Decided**: refusals are returned as an `isError` result (§5), measured on
+  Claude Code.
 
 ## Release sequencing
 
@@ -576,7 +577,7 @@ the child does not reset them. An injection that crashes a server
 therefore cannot clear taint. Details in §8.
 
 Protocol sessions are deliberately not used as the scope of a run. hoophq's
-proxy refuses for now 2026-07-28 because its enforcement was keyed to sessions
+proxy refuses 2026-07-28 for now because its enforcement was keyed to sessions
 [S14], and AgentBrake's must work on both eras.
 
 **Across servers** (read on server A, send through server B). Two proxies
@@ -617,15 +618,33 @@ for its simplicity, but it is not the case that justifies the release.
 
 ## 5. Decision 4: what the client receives when a call is blocked
 
-> **Not decided here.** Whether a refusal is returned as an `isError` result or
-> as a JSON-RPC error will be **measured on Claude Code with a prototype**
-> (plan step 1). The measurement covers what the model sees, whether it
-> retries, and whether the session continues. This section records the two
-> candidates and the arguments on each side. The `isError` form is shown first
-> because the spec's guidance leans that way, not because it was chosen.
+> **Decided: candidate A, a normal result with `isError: true`.** The spec
+> says clients **SHOULD** pass tool execution errors to the model and only
+> **MAY** pass protocol errors [S5]; candidate B needs a private error code
+> that no client gives any meaning to. The Claude Code measurement below
+> does not by itself separate the two candidates — Claude Code displayed
+> both the same way, as a plain "Error: ..." line, and reacted to both the
+> same way — so the decision rests on the spec argument above, not on a
+> difference the measurement found.
+>
+> **Measurement (Phase A prototype).** Sonnet 5, high effort, Claude Code
+> v2.1.296, 2026-10-11/12. 12 runs reached a block: 6 in `isError` mode
+> without insistence (3 with the instructive refusal text, 3 with the
+> neutral text — same results either way), 3 in JSON-RPC mode without
+> insistence, and 3 in JSON-RPC mode with an insistent follow-up from the
+> user. Across all 12: no retry, no workaround attempted, the model informed
+> the user every time, and the session continued every time. **`isError`
+> mode was not run with an insistent follow-up.** The refusal text stays
+> instructive by default; `--refusal-text neutral` is kept as a documented
+> option, since the runs that used it gave the same results. All 12 runs are
+> one model on one scenario (a legitimate request the policy blocks); Opus
+> 5.5 was tried for 2 runs but was cut off by its own filter before reaching
+> the block, so it contributes no data point either way. Full detail,
+> including what the measurement does not cover, in
+> `prototypes/mcp_proxy/README.md`.
 
-**Candidate A: a tool execution error, a normal result with
-`isError: true`.**
+**Candidate A (chosen as the default): a tool execution error, a normal
+result with `isError: true`.**
 
 ```json
 {
@@ -665,7 +684,7 @@ Against candidate A:
   may retry or work around it. Repeated identical retries would then hit the
   loop detector, but workarounds through other tools would not.
 
-**Candidate B: a JSON-RPC error.**
+**Candidate B (rejected alternative): a JSON-RPC error.**
 
 For candidate B:
 
@@ -1029,12 +1048,16 @@ Decided at review, recorded in the body:
 - 0.5.0 after the hook's 0.4.0 ("Release sequencing");
 - `init` creates the key on an explicit action (§2, §7);
 - taint is never cleared within a proxy's life, and a crashed server is
-  restarted with state kept (§4, §8).
+  restarted with state kept (§4, §8);
+- **refusal form** (§5): `isError` result, measured on Claude Code with the
+  Phase A prototype.
 
 Still open:
 
-- **Refusal form** (§5): `isError` result or JSON-RPC error. To be measured on
-  Claude Code with the prototype (plan step 1), not decided here.
+- **Behaviour with other models, especially smaller ones, and with
+  `isError` under user insistence** (§5): the Phase A measurement covers one
+  model (Sonnet 5) and never ran `isError` mode against an insistent
+  follow-up.
 - **Era translation in multi-server mode** (§4): translate between a modern
   client and a legacy backend, or require one era for 0.5.0. This depends on
   the effort measured in step 8.
