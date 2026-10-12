@@ -84,7 +84,7 @@ What follows for the proxy:
   servers "MUST NOT write JSON-RPC requests to stdout" [S4]. Sampling,
   elicitation and roots come back inside an `InputRequiredResult`, and the
   client retries the same `tools/call` with `inputResponses` and an opaque
-  `requestState` under a **new JSON-RPC id** [S6]. In the legacy era the
+  `requestState` under a **new JSON-RPC id** [S6][S21]. In the legacy era the
   server **does** send requests to the client (`sampling/createMessage`,
   `elicitation/create`, `roots/list`) [S3]. The proxy relays both directions.
 - Modern MCP is stateless: "an open connection, such as a STDIO process, is
@@ -231,7 +231,7 @@ The SDK keeps two roles:
 
 | Project | Shape | Client config | Policy and filtering | Notes |
 |---|---|---|---|---|
-| hoophq/mcpproxy [S14] | Aggregating daemon; Streamable HTTP front; stdio or HTTP backends | Client points at `http://127.0.0.1:8000/mcp` | Allow/deny by glob; **denied tools removed from `tools/list`**; human approval queue; JSONL audit log | Prefixes tools `<backend>_<tool>`. Serves revisions up to 2025-11-25 only: it **refuses 2026-07-28** with `-32022`, because its call budgets and rug-pull detection rely on session state. Denies server-initiated sampling and elicitation by default. In-memory state, single replica. |
+| hoophq/mcpproxy [S14] | Aggregating daemon; Streamable HTTP front; stdio or HTTP backends | Client points at `http://127.0.0.1:8000/mcp` | Allow/deny by glob; **denied tools removed from `tools/list`**; human approval queue; JSONL audit log (only when `wal_dir` is set) | Prefixes tools `<backend>_<tool>`. Serves revisions up to 2025-11-25 only: it **refuses 2026-07-28 for now** with `-32022`, because its call budgets and rug-pull detection rely on session state (its README says the stateless path can be served once its list of blockers is empty). Denies server-initiated sampling and elicitation by default. In-memory state, single replica. |
 | agentgateway [S15] | Aggregating gateway; stdio targets spawned per client connection | Client points at an HTTP endpoint | Tool-call policy not described on that page | Prefixes `<target>_<tool>` to avoid collisions. |
 | sparfenyuk/mcp-proxy [S16] | stdio⇄HTTP transport bridge, optional named servers | `"command": "mcp-proxy", "args": [URL]` in the client's `mcpServers` | None (bridge only) | Shows the **wrap-the-command** pattern for stdio clients. |
 | Docker MCP Gateway [S17] | Single centralized gateway; servers run in containers | Clients connect to the gateway; profiles select servers | Server selection by profile; credential injection; logging | No per-call blocking described on that page. |
@@ -576,7 +576,7 @@ the child does not reset them. An injection that crashes a server
 therefore cannot clear taint. Details in §8.
 
 Protocol sessions are deliberately not used as the scope of a run. hoophq's
-proxy had to refuse 2026-07-28 because its enforcement was keyed to sessions
+proxy refuses for now 2026-07-28 because its enforcement was keyed to sessions
 [S14], and AgentBrake's must work on both eras.
 
 **Across servers** (read on server A, send through server B). Two proxies
@@ -1076,6 +1076,7 @@ Specification (Model Context Protocol, revision 2026-07-28 unless noted):
 - [S9] Streamable HTTP: https://modelcontextprotocol.io/specification/2026-07-28/basic/transports/streamable-http
 - [S10] Security best practices (token passthrough, local server compromise, stdio in proxy scenarios): https://modelcontextprotocol.io/specification/2026-07-28/basic/security_best_practices
 - [S20] server/discover: https://modelcontextprotocol.io/specification/2026-07-28/server/discover
+- [S21] Key Changes, revision 2026-07-28: https://modelcontextprotocol.io/specification/2026-07-28/changelog
 
 Official Python SDK:
 
