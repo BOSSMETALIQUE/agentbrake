@@ -218,20 +218,25 @@ Flow control is a strong, cheap layer, not a sandbox. Its guarantees are honest 
 
 ## Guarding Claude Code sessions (PreToolUse hook)
 
+> **Status: unreleased.** This hook is part of v0.4.0, which is not published yet. `py-agentbrake` on PyPI is 0.3.5 and does not contain it (it has no `agentbrake claude-code` command), so for now install from a checkout of this repository, on a branch that has the hook (`main` does not yet).
+
 ### Protect your Claude Code in 30 seconds
 
 ```bash
-pipx install py-agentbrake          # or: pip install py-agentbrake
+# from the root of a checkout of this branch
+pipx install .
 agentbrake claude-code install
 ```
 
-`install` creates a dedicated environment for the hook if the interpreter you ran it from is not already an isolated one (so switching project venvs never breaks it), checks that the hook starts, backs up `~/.claude/settings.json`, and registers the hook. New Claude Code sessions are protected right away.
+Run from pipx, `install` pins the hook to pipx's own environment for the package (so switching project venvs never breaks it), checks that the hook starts, backs up `~/.claude/settings.json`, and registers the hook. New Claude Code sessions are protected right away.
+
+With a plain `pip install .` instead, run `agentbrake claude-code install --no-dedicated-venv` (the hook then runs with that interpreter, so keep it in place) or pass `--python`. By default, from an interpreter that is not isolated, `install` fills a dedicated environment (`~/.agentbrake/venv`) from PyPI, and the PyPI release has no hook.
 
 **What you'll see:** almost nothing, most of the time. The hook stays silent while a session is doing ordinary work. It speaks up only when a call looks like the *lethal trifecta* — your private data **and** untrusted content both in the session, now heading to an outside destination:
 
 > AgentBrake blocked this call: This command (`'curl' reaches the network`) to `evil.example` can send data off the machine. The session read a .env file (call #3) and a web page (call #5). If that page carried a hidden instruction, this is how your data would leak.
 
-**If it ever gets in your way**, from your own terminal (Claude can't do this itself):
+**If it ever gets in your way**, run these from your own terminal. When Claude issues them directly through a tool, the hook denies them; it matches the command text, so a disguised command can still get past (see below):
 
 ```bash
 agentbrake claude-code disable          # off now (--minutes 30 to auto-re-enable)
@@ -256,15 +261,18 @@ The hook follows the [lethal trifecta](https://simonwillison.net/2025/Jun/16/the
 
 ### Always on, and self-protecting
 
-- Loop detection (the same call 6× in a row is denied), retry storms, a 2,000-call budget.
-- **Signed receipts** for every deny/ask/observe/approval, in `~/.agentbrake/claude-code/<session>.receipts.jsonl`; `agentbrake claude-code export` writes a bundle for `agentbrake verify`.
-- **Fail-closed:** an internal error, unreadable state, an invalid policy or a broken import blocks the call (exit 2). Claude can't switch the hook off through its tools (control commands, the state directory and `disableAllHooks` are refused; editing `.claude/settings*.json` asks). The hook runs Python in isolated mode, so a repo shipping its own `agentbrake/` can't replace it.
+- **Loop:** the 6th identical consecutive call (same tool, same arguments) is denied; the five before it run. The hook's default `loop.threshold` is 6, higher than the SDK's `DEFAULT_LOOP_THRESHOLD = 4`. Polling tools (`TaskOutput`, `TaskGet`, `TaskList`, `ScheduleWakeup`, `WaitForMcpServers`) are exempt.
+- **Retry storm:** once a tool has failed 7 times within the last 19 calls, its next attempt asks (`retry_storm`: 8 in a window of 20; only failed calls count).
+- **Budget:** after 2,000 tool calls in a session (calls the hook denied are not counted), each further call asks; it is not denied. Loop, retry storm and budget are all set in `policy.json`.
+- **Signed receipts** for the hook's own decisions: each deny, ask and observe, plus an approval when an asked call goes on to run (recorded from the `PostToolUse` event that follows it), in `~/.agentbrake/claude-code/<session>.receipts.jsonl`; `agentbrake claude-code export` writes a bundle for `agentbrake verify`. No receipt is written for a fail-closed block (below), for a hook run that times out or never starts, or for calls made while the hook is disabled.
+- **Fail-closed:** an internal error, unreadable state, an invalid policy, malformed hook input, a session lock it cannot take in time, or a broken import blocks the call (exit 2), with the reason on stderr and no receipt. The hook runs Python in isolated mode, so a repo shipping its own `agentbrake/` can't replace it.
+- **Self-protection, by pattern:** when Claude calls a tool directly, the hook denies a shell command that runs an `agentbrake claude-code` control command (`disable`, `enable`, `reset`, `install`, `uninstall`) or mentions `disableAllHooks`; denies a file tool (`Read`, `Edit`, `Write`, `NotebookEdit`, `Glob`, `Grep`) on its state directory, and an MCP call whose arguments name that directory; and asks before a shell command that mentions `.agentbrake` or a Claude Code settings file, or an `Edit`/`Write`/`NotebookEdit` of `.claude/settings.json` or `.claude/settings.local.json`. This matches the text of the call, so it is a pattern, not a guarantee: an obfuscated command (a name assembled at runtime, an encoded payload, a script written to disk and then run) can get past it.
 
 ### What it does not do (plainly)
 
 - It reads the command **text**, not a sandbox: this is a pattern, not a guarantee. The private-file check matches sensitive paths written in the command (so `awk ... .env`, `python -c "open('.env')"`, `cp .env /tmp` all taint), and fails closed when a reader's path can't be resolved (an unexpanded variable, a subshell). But a script written to disk that reads the file internally (`python exfil.py`), a path built at runtime, an alias, or an obfuscation it doesn't recognise still slips past — and it can over-flag (e.g. `grep ".env" notes.txt` searches for the string, yet taints). Over-flagging is cheap: the private leg alone never prompts; it only matters inside the full trifecta.
 - The **secret-in-arguments** check is pattern matching — it can miss a real secret and flag a non-secret.
-- It is **fail-open** on its own timeout, on a missing interpreter, and if the hook is removed from settings by something other than Claude. For a hook nobody can remove, use managed settings (`C:\Program Files\ClaudeCode\managed-settings.json` with `allowManagedHooksOnly`).
+- It is **fail-open** on its own timeout, on a missing interpreter, and if the hook is removed from settings, including by an obfuscated command the self-protection above does not catch. For a hook nobody can remove, use managed settings (`C:\Program Files\ClaudeCode\managed-settings.json` with `allowManagedHooksOnly`).
 - Where the Claude Code sandbox runs (macOS, Linux, WSL2 — **not native Windows**) it is the hard network boundary; this hook adds the sequence awareness it lacks.
 - Each call adds ~0.3–0.4 s for the extra Python process. Examples and a plugin: [`examples/claude-code/`](examples/claude-code/). Research and the full limits: [`docs/research/approval-fatigue-and-trifecta.md`](docs/research/approval-fatigue-and-trifecta.md), [`docs/research/claude-code-hook.md`](docs/research/claude-code-hook.md).
 
