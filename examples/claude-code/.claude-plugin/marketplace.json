@@ -1,0 +1,14 @@
+{
+  "name": "agentbrake",
+  "owner": {
+    "name": "BOSSMETALIQUE"
+  },
+  "description": "AgentBrake plugins for Claude Code",
+  "plugins": [
+    {
+      "name": "agentbrake-guard",
+      "source": "./agentbrake-guard",
+      "description": "AgentBrake PreToolUse hook with signed receipts"
+    }
+  ]
+}

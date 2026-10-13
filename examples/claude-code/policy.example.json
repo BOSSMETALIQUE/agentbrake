@@ -1,0 +1,37 @@
+{
+  "mode": "trifecta",
+  "egress_allowed_domains": [
+    "pypi.org",
+    "files.pythonhosted.org",
+    "registry.npmjs.org",
+    "crates.io",
+    "static.crates.io",
+    "github.com",
+    "api.github.com",
+    "raw.githubusercontent.com",
+    "codeload.github.com",
+    "artifacts.internal.example"
+  ],
+  "recipients": {
+    "mcp__claude_ai_Gmail__send_message": {
+      "fields": [
+        "to",
+        "cc",
+        "bcc"
+      ],
+      "values": [
+        "you@example.com"
+      ],
+      "other_fields": [
+        "subject",
+        "body",
+        "attachments",
+        "replyThreadId",
+        "replyToMessageId"
+      ]
+    }
+  },
+  "budget": {
+    "max_calls": 3000
+  }
+}

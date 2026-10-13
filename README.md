@@ -216,6 +216,58 @@ Flow control is a strong, cheap layer, not a sandbox. Its guarantees are honest 
 
 [`examples/08_langgraph_flow_middleware.py`](examples/08_langgraph_flow_middleware.py) runs a real LangGraph agent with AgentBrake as tool-call middleware, with no API key and no network access. One design point from building it: in our tests on LangGraph, returning a refusal message to the agent lets the agent keep going and retry, while raising stops the run, so the demo raises. For how the other frameworks expose a pre-execution hook, and what we did and did not verify by execution, see [`docs/research/framework-security-map.md`](docs/research/framework-security-map.md).
 
+## Guarding Claude Code sessions (PreToolUse hook)
+
+### Protect your Claude Code in 30 seconds
+
+```bash
+pipx install py-agentbrake          # or: pip install py-agentbrake
+agentbrake claude-code install
+```
+
+`install` creates a dedicated environment for the hook if the interpreter you ran it from is not already an isolated one (so switching project venvs never breaks it), checks that the hook starts, backs up `~/.claude/settings.json`, and registers the hook. New Claude Code sessions are protected right away.
+
+**What you'll see:** almost nothing, most of the time. The hook stays silent while a session is doing ordinary work. It speaks up only when a call looks like the *lethal trifecta* — your private data **and** untrusted content both in the session, now heading to an outside destination:
+
+> AgentBrake blocked this call: This command (`'curl' reaches the network`) to `evil.example` can send data off the machine. The session read a .env file (call #3) and a web page (call #5). If that page carried a hidden instruction, this is how your data would leak.
+
+**If it ever gets in your way**, from your own terminal (Claude can't do this itself):
+
+```bash
+agentbrake claude-code disable          # off now (--minutes 30 to auto-re-enable)
+agentbrake claude-code enable            # back on
+```
+
+### The rule (default mode: `trifecta`)
+
+The hook follows the [lethal trifecta](https://simonwillison.net/2025/Jun/16/the-lethal-trifecta/): a leak needs private data **and** untrusted content **and** a way out, together. It interrupts on the *combination*, not on any single step, so it asks rarely — because a prompt you see every few minutes is a prompt you approve without reading.
+
+| In the session | An outbound call to... | What happens |
+|---|---|---|
+| a secret read **and** untrusted content read | an unlisted host (e.g. `evil.example`) | **deny**, no prompt |
+| a secret read **and** untrusted content read | an allow-listed host, or one it can't determine | **ask** |
+| only one of the two (secret *or* untrusted) | anywhere | **allow**, recorded as a receipt |
+| neither | anywhere | **allow**, nothing recorded |
+
+- **Private** = reading `.env`, `*.pem`/`*.key`, `~/.ssh/*`, `~/.aws/credentials`, `.npmrc`, ... through *any* command (`cat`, `awk`, `grep`, `sed`, `head`, `python -c`, `Get-Content`, `cp`, `source`, ...), matched on the **file path** in the command rather than the verb; or a command that reveals secrets without a file (`env`, `gh auth token`, `git config --list`). **Untrusted** = `WebFetch`, `WebSearch`, any MCP read. **Outbound** = a network shell command, a `WebFetch` to an unlisted host, an MCP send. All configurable in `policy.json`.
+- A **secret-looking value in an outbound command's arguments** (an AWS/GitHub key, a private key, a token) also asks — only its SHA-256 fingerprint is ever stored, never the value. This is pattern matching, not a guarantee.
+- `agentbrake claude-code stats` shows, from your local receipts only, how often it asks and how fast you approve — to catch reflexive clicking.
+- `"mode": "taint-strict"` restores the pre-0.4 rule (any untrusted read, then any egress, asks); `"strict"` denies instead.
+
+### Always on, and self-protecting
+
+- Loop detection (the same call 6× in a row is denied), retry storms, a 2,000-call budget.
+- **Signed receipts** for every deny/ask/observe/approval, in `~/.agentbrake/claude-code/<session>.receipts.jsonl`; `agentbrake claude-code export` writes a bundle for `agentbrake verify`.
+- **Fail-closed:** an internal error, unreadable state, an invalid policy or a broken import blocks the call (exit 2). Claude can't switch the hook off through its tools (control commands, the state directory and `disableAllHooks` are refused; editing `.claude/settings*.json` asks). The hook runs Python in isolated mode, so a repo shipping its own `agentbrake/` can't replace it.
+
+### What it does not do (plainly)
+
+- It reads the command **text**, not a sandbox: this is a pattern, not a guarantee. The private-file check matches sensitive paths written in the command (so `awk ... .env`, `python -c "open('.env')"`, `cp .env /tmp` all taint), and fails closed when a reader's path can't be resolved (an unexpanded variable, a subshell). But a script written to disk that reads the file internally (`python exfil.py`), a path built at runtime, an alias, or an obfuscation it doesn't recognise still slips past — and it can over-flag (e.g. `grep ".env" notes.txt` searches for the string, yet taints). Over-flagging is cheap: the private leg alone never prompts; it only matters inside the full trifecta.
+- The **secret-in-arguments** check is pattern matching — it can miss a real secret and flag a non-secret.
+- It is **fail-open** on its own timeout, on a missing interpreter, and if the hook is removed from settings by something other than Claude. For a hook nobody can remove, use managed settings (`C:\Program Files\ClaudeCode\managed-settings.json` with `allowManagedHooksOnly`).
+- Where the Claude Code sandbox runs (macOS, Linux, WSL2 — **not native Windows**) it is the hard network boundary; this hook adds the sequence awareness it lacks.
+- Each call adds ~0.3–0.4 s for the extra Python process. Examples and a plugin: [`examples/claude-code/`](examples/claude-code/). Research and the full limits: [`docs/research/approval-fatigue-and-trifecta.md`](docs/research/approval-fatigue-and-trifecta.md), [`docs/research/claude-code-hook.md`](docs/research/claude-code-hook.md).
+
 ## How it works
 
 The `@guard()` decorator wraps your tool-dispatch function and keeps a per-run `RunState` (run id, total cost, full call history, active taints, active delegation). Every call passes through the active detectors in order (delegation → escalation → flow → loop → retry-storm → budget), and any hit raises `AgentBrakeInterrupt` *before* the underlying tool runs. Loop detection uses a SHA-256 hash over the JSON-sorted `(name, args)` payload, so argument ordering doesn't fool it.
@@ -541,6 +593,7 @@ Design and research write-ups live in the repo, including their own caveats:
 - [`docs/research/framework-security-map.md`](docs/research/framework-security-map.md): how popular agent frameworks expose a pre-execution hook, and where native flow control is missing. Each claim is marked with how it was checked (run, read from the code path, or not verified).
 - [`docs/research/arxiv-survey.md`](docs/research/arxiv-survey.md): a survey of recent agent-security papers and what was and was not adopted.
 - [`docs/research/argument-level-flow.md`](docs/research/argument-level-flow.md): CaMeL, FIDES, Progent, Invariant and PACT compared on argument-level flow control; why `allow_args` is an exact allow-list and why provenance from the user's prompt was not shipped.
+- [`docs/research/claude-code-hook.md`](docs/research/claude-code-hook.md): Claude Code's hook contract re-checked against the docs, existing security hooks (Lasso, Superagent, Enkrypt and others) compared, known Claude Code exfiltration CVEs, and the design of the session-taint hook with what stays fail-open.
 - [`docs/design/zk-receipts.md`](docs/design/zk-receipts.md): a design spike on zero-knowledge receipts, including why they do not fix the compromised-host case and where they would actually help.
 
 ## Why AgentBrake vs LangSmith / Helicone / AgentOps
